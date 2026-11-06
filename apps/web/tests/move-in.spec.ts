@@ -15,9 +15,12 @@ test("two people share a move-in plan and explicitly approve a home item", async
   await expect(item).toBeVisible();await expect(second.locator('.move-item').filter({hasText:'Home Office Desk Lamp'})).toBeVisible();
   await item.getByRole('button',{name:'I approve'}).click();
   await expect(second.locator('.move-item').getByText('Avery: approved')).toBeVisible();
+  await expect(second.getByRole('status').filter({hasText:'Avery approved Home Office Desk Lamp.'})).toBeVisible();
   await second.locator('.move-item').getByRole('button',{name:'I approve'}).click();
   await expect(item.getByText('agreed',{exact:true})).toBeVisible();
+  await expect(first.getByRole('status').filter({hasText:'Everyone approved Home Office Desk Lamp.'})).toBeVisible();
   await first.reload();await first.getByRole('button',{name:'Plan',exact:true}).click();await expect(first.locator('.move-item').getByText('agreed',{exact:true})).toBeVisible();
+  await expect(first.getByRole('status').filter({hasText:'Everyone approved Home Office Desk Lamp.'})).toHaveCount(0);
   expect(await second.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();
   await a.close();await b.close();
 });

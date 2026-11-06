@@ -96,6 +96,69 @@ export default function Home() {
     [quantity, Quantity] = useState(1),
     [thinking, Thinking] = useState(false),
     [tab, Tab] = useState("shop");
+  const [soundEnabled, setSoundEnabled] = useState(false);
+  const [roomAlert, setRoomAlert] = useState("");
+  const soundContext = useRef<AudioContext | null>(null);
+  const previousRoom = useRef<any>(null);
+  function playNotification(agreement = false) {
+    const context = soundContext.current;
+    if (!soundEnabled || !context || context.state !== "running") return;
+    const now = context.currentTime;
+    const notes = agreement ? [660, 880] : [660];
+    notes.forEach((frequency, index) => {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      const start = now + index * 0.13;
+      oscillator.type = "sine"; oscillator.frequency.value = frequency;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.045, start + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.12);
+      oscillator.connect(gain); gain.connect(context.destination);
+      oscillator.start(start); oscillator.stop(start + 0.13);
+    });
+  }
+  async function toggleSound() {
+    if (soundEnabled) { setSoundEnabled(false); return; }
+    try {
+      const context = soundContext.current || new AudioContext();
+      soundContext.current = context;
+      await context.resume();
+      if (context.state !== "running") throw new Error("Audio unavailable");
+      setSoundEnabled(true);
+    } catch { setRoomAlert("Sound could not be enabled in this browser."); }
+  }
+  useEffect(() => () => { void soundContext.current?.close(); }, []);
+  useEffect(() => {
+    if (!room?.id || !me?.name) return;
+    const previous = previousRoom.current;
+    previousRoom.current = room;
+    if (!previous || previous.id !== room.id || room.revision <= previous.revision) return;
+    let alert = "";
+    let agreement = false;
+    const productName = (id: string) => (room.move_in?.items?.[id]?.name || room.discovery?.find((p: any) => p.id === id)?.name || catalog.find((p: any) => p.id === id)?.name || "a product");
+    if (room.agreed_product && room.agreed_product !== previous.agreed_product) {
+      alert = `Everyone agreed on ${productName(room.agreed_product)}.`; agreement = true;
+    } else {
+      for (const [id, raw] of Object.entries(room.move_in?.items || {})) {
+        const item: any = raw, old = previous.move_in?.items?.[id];
+        if (item.status === "agreed" && old?.status !== "agreed") {
+          alert = `Everyone approved ${item.name}.`; agreement = true; break;
+        }
+        const approver = Object.keys(item.approvals || {}).find(person => person !== me.name && item.approvals[person] === true && old?.approvals?.[person] !== true);
+        if (approver) { alert = `${approver} approved ${item.name}.`; agreement = true; break; }
+      }
+      if (!alert) {
+        const voter = Object.keys(room.agreement_votes || {}).find(person => person !== me.name && room.agreement_votes[person] && room.agreement_votes[person] !== previous.agreement_votes?.[person]);
+        if (voter) { alert = `${voter} agrees on ${productName(room.agreement_votes[voter])}.`; agreement = true; }
+      }
+    }
+    const newMessages = (room.messages || []).slice((previous.messages || []).length);
+    const incoming = newMessages.find((message: any) => message.actor !== me.name);
+    if (!alert && incoming) alert = `${incoming.actor} sent a message.`;
+    const joined = (room.people || []).filter((person: string) => person !== me.name && !(previous.people || []).includes(person));
+    if (!alert && joined.length) alert = `${joined.join(", ")} joined the room.`;
+    if (alert) { setRoomAlert(alert); playNotification(agreement); }
+  }, [room, me?.name]);
   useEffect(() => {
     if (room?.id)
       api("rooms/" + room.id + "/me")
@@ -411,6 +474,7 @@ export default function Home() {
           </button>
         )}
       </header>
+      {roomAlert && <div className="room-alert" role="status"><span>{roomAlert}</span><button type="button" aria-label="Dismiss room update" onClick={() => setRoomAlert("")}>×</button></div>}
       {notice && (
         <p role="status" className="cart-notice">
           <span>{notice}</span>
@@ -980,7 +1044,7 @@ export default function Home() {
               <AudioCall roomId={room.id} online={online} />
               <div className="conversation-label">
                 <span>THE ROOM CHAT</span>
-                <span>{room.people.length} PEOPLE</span>
+                <span>{room.people.length} PEOPLE · <button type="button" className="sound-toggle" aria-pressed={soundEnabled} onClick={toggleSound}>{soundEnabled ? "Sound on" : "Enable sound"}</button></span>
               </div>
               <div className="messages">
                 {room.messages.length === 0 ? (
@@ -998,7 +1062,7 @@ export default function Home() {
                   room.messages.map((m: any, i: number) => (
                     <article
                       key={i}
-                      className={m.actor === "ShopSide" ? "agent-message" : ""}
+                      className={m.actor === "ShopSide" ? "agent-message" : m.actor === me?.name ? "message-own" : "message-incoming"}
                     >
                       <span className="message-avatar">
                         {m.actor === "ShopSide" ? (
@@ -1008,7 +1072,7 @@ export default function Home() {
                         )}
                       </span>
                       <div>
-                        <strong>{m.actor}</strong>
+                        <strong>{m.actor}{m.actor === me?.name && m.actor !== "ShopSide" ? " · You" : ""}</strong>
                         <p>{m.text}</p>
                       </div>
                     </article>
