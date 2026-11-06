@@ -1,0 +1,13 @@
+# Railway deployment and two-person testing
+
+Use two Railway services from this repository and HTTPS. No deployment is performed by this repository.
+
+1. Create an API service using the repository with build context `services` and Dockerfile `api/Dockerfile`. Configure one replica. Attach a persistent volume mounted at `/data`; set `SHOPSIDE_DB=/data/shopside.sqlite3`.
+2. Create a web service using `apps/web/Dockerfile` with build context `apps/web`. Set `API_INTERNAL_URL` to the API service's Railway private URL and port. The web service proxies HTTP and WebSocket traffic to the API; the API does not need a public domain. Railway supplies `PORT`; configure the API to listen on `0.0.0.0:$PORT` and use that same port in the private URL. Assign a public Railway HTTPS domain to the web service.
+3. Set `WEB_ORIGIN` on the API to the exact web HTTPS origin without trailing slash, and `COOKIE_SECURE=true`. Configure the provider values from ENVIRONMENT.md in the API service; no credentials need to be placed in the web service. Set AI_PROVIDER=vertex-express and PAYPAL_ENV=sandbox.
+4. Set `WEBRTC_ICE_SERVERS` on the API to a JSON array of standard WebRTC ICE server objects including a TURN service if you need reliable calls across different NATs. Example shape: `[{"urls":"stun:stun.l.google.com:19302"},{"urls":"turns:YOUR_TURN_HOST:5349","username":"...","credential":"..."}]`. Browsers must receive TURN credentials, so use short-lived TURN credentials or a dedicated limited relay. The default STUN-only configuration does not guarantee connectivity across restrictive networks. Railway hosting does not supply a TURN server automatically.
+5. Open the web domain in two separate browsers or profiles. Create and join a room, then each person selects **Join voice** and grants microphone permission. Both should display **Voice connected** and hear one another; **Mute** and **Leave** control each participant. Calls require HTTPS, microphone permission and UDP/TCP network paths permitted by the clients and their relay. Audio is peer-to-peer and not recorded or sent to the agent. The sample products are fictional, and sandbox checkout ships no goods.
+
+Current limitations: one API worker/replica, one writable SQLite volume, STUN-only by default, no incoming call notifications, no voice transcription or audio fed to the agent, and no calls to telephone numbers. Railway deployment and calls across different real networks have not yet been verified. PayPal sandbox checkout must use a sandbox buyer and merchant; it is not a production purchase.
+
+`API_INTERNAL_URL` must be set for the web service at build time as well as runtime, because Next.js builds its rewrite configuration into the application. Redeploy the web service after changing it.

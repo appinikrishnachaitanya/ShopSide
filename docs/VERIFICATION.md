@@ -29,3 +29,9 @@ Published configuration confirmed: key injection includes aiplatform.googleapis.
 - Reproduce the live discovery check with `PYTHONPATH=services/api .venv/bin/python scripts/verify_live_discovery.py` after configuring credentials. It creates a verification room and uses real model/provider calls.
 - No buyer approval or capture was performed during these checks. These checks do not establish a completed sandbox purchase.
 - A separate live ADK turn invoked paypal_order_status through the official PayPal MCP server against an app-created persisted sandbox order. API status 200, MCP tool activity recorded, and final agent response reported CREATED. The order remained unapproved and uncaptured.
+
+## Voice, recommendations and UI
+- Voice signaling backend test verifies origin/membership and forwarding of offer/answer only to another authenticated room member.
+- The Chromium two-context voice test exchanged peer_ready, offer and answer, but no ICE candidates were gathered in this cloud environment (a separate direct Chromium diagnostic returned `iceGatheringState=complete`, zero candidates). Audio connection and mute/leave browser assertions therefore failed and remain unverified; no claim of working cross-network audio is made. Test uses a fake microphone, not an actual human call.
+- Room desktop/mobile browser journey still passed after the UI change. The public Railway deployment has not been performed or tested. The STUN default may require an externally configured TURN relay for restrictive networks.
+- Recommendations use the shared state, including exact product names mentioned by humans, confirmed preferences, shortlist, explicit likes and budget; they do not infer missing product performance facts.

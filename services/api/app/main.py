@@ -398,3 +398,51 @@ def whoami(r:str,request:Request):
     with lock:
         actor=auth(r,request); s=load(r)
         return {'name':actor,'is_payer':actor==s['payer']}
+
+# Ephemeral audio signaling: membership and Origin are checked before joining.
+# Media is exchanged directly between the two browsers, not stored by ShopSide.
+signal_peers={}
+@app.websocket('/api/rooms/{r}/call')
+async def call_signal(ws:WebSocket,r:str):
+    if ws.headers.get('origin')!=WEB_ORIGIN:
+        await ws.close(code=1008); return
+    try: actor=auth(r,ws)
+    except HTTPException:
+        await ws.close(code=1008); return
+    await ws.accept()
+    peers=signal_peers.setdefault(r,{})
+    if actor in peers or len(peers)>=2:
+        await ws.close(code=1008); return
+    peers[actor]=ws
+    async def send_others(payload):
+        for name,peer in list(peers.items()):
+            if name!=actor:
+                try: await peer.send_json(payload)
+                except (RuntimeError,WebSocketDisconnect): pass
+    await send_others({'type':'peer_ready'})
+    try:
+        while True:
+            data=await ws.receive_json()
+            if not isinstance(data,dict) or data.get('type') not in ('offer','answer','ice','hangup') or len(json.dumps(data))>32768:
+                await ws.close(code=1008); break
+            await send_others({'type':data['type'],'payload':data.get('payload')})
+    except (WebSocketDisconnect,RuntimeError): pass
+    finally:
+        peers.pop(actor,None)
+        await send_others({'type':'hangup'})
+        if not peers: signal_peers.pop(r,None)
+
+@app.get('/api/rooms/{r}/call-config')
+def call_config(r:str,request:Request):
+    auth(r,request)
+    raw=os.getenv('WEBRTC_ICE_SERVERS')
+    if not raw: return {'iceServers':[{'urls':'stun:stun.l.google.com:19302'}]}
+    try:
+        servers=json.loads(raw)
+        if not isinstance(servers,list) or not servers or len(servers)>8: raise ValueError()
+        for server in servers:
+            urls=server.get('urls')
+            if not isinstance(urls,(str,list)) or not urls: raise ValueError()
+            if any(not isinstance(u,str) or not u.startswith(('stun:','stuns:','turn:','turns:')) for u in ([urls] if isinstance(urls,str) else urls)): raise ValueError()
+        return {'iceServers':servers}
+    except (TypeError,ValueError,AttributeError): raise HTTPException(503,'Voice relay configuration is invalid')

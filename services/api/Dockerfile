@@ -9,4 +9,4 @@ COPY api/requirements.lock .
 RUN pip install --no-cache-dir -r requirements.lock
 COPY api/app app
 COPY --from=paypal /mcp /paypal-mcp
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--workers", "1"]
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]

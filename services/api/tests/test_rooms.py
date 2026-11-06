@@ -168,3 +168,18 @@ def test_express_mode_ignores_ambient_project(monkeypatch):
     monkeypatch.delenv('VERTEX_API_KEY',raising=False)
     monkeypatch.setattr(config.genai,'Client',lambda **kwargs:kwargs)
     assert config.configured_client()=={'vertexai':True,'api_key':'test-express-key'}
+
+def test_voice_signaling_only_between_authorized_room_members():
+    from starlette.websockets import WebSocketDisconnect
+    a,b,c=TestClient(app),TestClient(app),TestClient(app)
+    result=a.post('/api/rooms',json={'name':'A'}).json();r=result['room']['id'];b.post('/api/join/'+result['invite'],json={'name':'B'})
+    import pytest
+    with pytest.raises(WebSocketDisconnect):
+        with c.websocket_connect('/api/rooms/'+r+'/call',headers={'origin':'http://localhost:3000'}):pass
+    with a.websocket_connect('/api/rooms/'+r+'/call',headers={'origin':'http://localhost:3000'}) as first:
+        with b.websocket_connect('/api/rooms/'+r+'/call',headers={'origin':'http://localhost:3000'}) as second:
+            assert first.receive_json()['type']=='peer_ready'
+            first.send_json({'type':'offer','payload':{'sdp':'test'}})
+            assert second.receive_json()=={'type':'offer','payload':{'sdp':'test'}}
+            second.send_json({'type':'answer','payload':{'sdp':'reply'}})
+            assert first.receive_json()=={'type':'answer','payload':{'sdp':'reply'}}

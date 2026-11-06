@@ -44,3 +44,8 @@ See [verification](docs/VERIFICATION.md), [judge/demo guide](docs/DEMO.md), and 
 Channel3 shared discovery and product details are implemented against its published v1 contract. Set `CHANNEL3_API_KEY`; missing credentials show an explicit error. Live products use retailer links and cannot enter demo PayPal checkout. The board uses real AG Grid Community as the revised brief's permitted fallback; AG Studio access remains blocked. See [sponsor status](docs/SPONSOR-STATUS.md) for implementation and verification boundaries.
 
 Detailed credential and networking instructions: [environment configuration](docs/ENVIRONMENT.md). Run `bash scripts/dev.sh` from a fresh checkout for local setup/startup.
+
+## Voice and Railway
+Voice is an opt-in, two-person browser audio call. Both room members must select **Join voice** and grant microphone access. Calls use WebRTC and are not sent to the shopping agent. STUN alone may fail on restrictive networks; configure a TURN relay using `WEBRTC_ICE_SERVERS` for broader connectivity. The current cloud browser could not gather ICE candidates, so end-to-end audio remains unverified here. See [Railway deployment](docs/RAILWAY.md) for service settings, persistent storage, and current limitations.
+
+The shared priorities panel updates from room messages mentioning products by name, shortlist, reactions, confirmed preferences and budget. Ask ShopSide explicitly for model-generated recommendations based on the room conversation.

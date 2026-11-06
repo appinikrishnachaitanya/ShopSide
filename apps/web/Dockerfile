@@ -4,4 +4,4 @@ COPY package*.json ./
 RUN npm ci
 COPY . .
 RUN npm run build
-CMD ["npx", "next", "start", "--hostname", "0.0.0.0"]
+CMD ["sh", "-c", "exec npx next start --hostname 0.0.0.0 --port ${PORT:-3000}"]
