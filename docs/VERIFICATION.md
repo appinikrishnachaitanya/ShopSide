@@ -18,3 +18,14 @@
 - Fixed quote review sending GET instead of POST, discovered by that browser test.
 - Event-driven WebSocket subscriber notifications replace polling of SQLite.
 - Live credentials, Studio access, real identity/offer matching and actual pair feedback remain outstanding; passing offline checks do not establish provider success.
+
+## Live Vertex AI express verification — November 6, 2026
+Published configuration confirmed: key injection includes aiplatform.googleapis.com, AI_PROVIDER is present, and Vertex express inference succeeded.
+
+- Real Vertex generation returned text successfully.
+- Real ADK turn executed search_catalog and update_decision_board. Comparison [0,2] persisted; a second authenticated member fetched the same comparison and shared response.
+- Real ADK discovery turn executed discover_products and update_decision_board, saved 12 actual Channel3 results and selected two Channel3 products. Both authenticated members fetched identical results and board selection.
+- These checks used API clients with distinct cookie jars, not browser contexts; the earlier Playwright desktop/mobile journey is separate evidence.
+- Reproduce the live discovery check with `PYTHONPATH=services/api .venv/bin/python scripts/verify_live_discovery.py` after configuring credentials. It creates a verification room and uses real model/provider calls.
+- No buyer approval or capture was performed during these checks. These checks do not establish a completed sandbox purchase.
+- A separate live ADK turn invoked paypal_order_status through the official PayPal MCP server against an app-created persisted sandbox order. API status 200, MCP tool activity recorded, and final agent response reported CREATED. The order remained unapproved and uncaptured.

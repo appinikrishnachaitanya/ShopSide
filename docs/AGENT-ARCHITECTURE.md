@@ -14,3 +14,6 @@ Verified in this runtime:
 - Ten offline tests pass; the ADK test uses an explicitly fake runner to verify actual room tool execution, shared activity persistence and absence of payment mutation tools.
 
 Setup: npm ci --prefix services/paypal-mcp; install services/api/requirements.lock. No additional PayPal key is required. Existing client ID/secret mint the temporary MCP token. Node 24 is needed alongside Python 3.12. Compose now includes Node and the pinned MCP installation in the API container; container execution remains unverified.
+
+## Current Vertex verification
+The earlier Developer API failure is superseded by successful Vertex AI express inference. Live ADK calls executed catalog lookup and comparison, then actual Channel3 search and shared board selection. Two independently authenticated API clients observed identical results. The official MCP order read also succeeded after its host became active, returning CREATED. See VERIFICATION.md for the current evidence; no real buyer approval/capture is claimed.

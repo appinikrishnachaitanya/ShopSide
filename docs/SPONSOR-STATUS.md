@@ -3,10 +3,10 @@
 | Requirement | Status | Evidence / limitation |
 | --- | --- | --- |
 | Shared two-browser room | Implemented, previously verified | Desktop/mobile browser journey in tests |
-| Channel3 v1 search/details | Implemented, live unverified | Based on published @channel3/skills 1.0.0, channel3-api API reference |
-| Shared discovery and offer provenance | Implemented, offline tested | Validated normalized models, retrieval time, external-only checkout |
-| Gemini discovery/board tools | Implemented, live unverified | Requires Gemini key/model and Channel3 key |
-| AG Studio | Blocked | Sponsor/docs host denied by runtime network; SDK/licensing not established |
+| Channel3 v1 search/details | Implemented, live verified | Real Channel3 request through ADK; 12 results shared |
+| Shared discovery and offer provenance | Implemented, live verified | Validated normalized models, retrieval time, external-only checkout |
+| Gemini discovery/board tools | Implemented, live verified | Vertex express ADK discovery and board tools executed |
+| AG Studio | Blocked | Sponsor page now accessible; official Studio documentation/SDK/licensing still need inspection |
 | Real AG Grid fallback | Implemented | ag-grid-react/community 36.3.0; no Studio claim |
 | Board presets, priorities and choice | Implemented | FastAPI persists preset and authoritative room selections |
 | Numeric attribute chart | Omitted | No sourced comparable numeric attribute; no fabricated scores |
