@@ -27,6 +27,18 @@ db.execute('CREATE TABLE IF NOT EXISTS members(token TEXT PRIMARY KEY, room TEXT
 catalog = [dict(id=str(i), name=n, price=p, currency='USD', description='Fictional sample headphones · demo inventory') for i,(n,p) in enumerate([('Sunday Studio',8900),('Everyday Air',6900),('Quiet Hours',9900),('City Rhythm',7900),('Soft Signal',5900),('Open Road',9500),('Little Escape',4900),('Evening Edit',8500)])]
 for product in catalog:
     product.update(variant='standard',stock=20,attributes={'microphone_quality':None,'connection':'Bluetooth','color':'Sage'},evidence='Fictional fixture specification; no measured microphone data.')
+db.execute('CREATE TABLE IF NOT EXISTS inventory(product TEXT, variant TEXT, stock INTEGER NOT NULL, PRIMARY KEY(product,variant))')
+for product in catalog:
+    product['variants']=['standard','midnight']
+    for variant in product['variants']: db.execute('INSERT OR IGNORE INTO inventory VALUES(?,?,?)',(product['id'],variant,20))
+db.commit()
+def stock(product,variant):
+    row=db.execute('SELECT stock FROM inventory WHERE product=? AND variant=?',(product,variant)).fetchone()
+    return row[0] if row else 0
+class CartLine(BaseModel):
+    product:str
+    variant:str='standard'
+    quantity:int=Field(ge=0,le=10,strict=True)
 class Entry(BaseModel):
     name: str = Field(min_length=1,max_length=40)
     title: str = Field(default='Headphones for my commute',max_length=100)
@@ -102,6 +114,15 @@ def command(r:str,body:Command,request:Request):
             if amount<0: raise HTTPException(422,'Invalid budget')
             s['budget']=amount
         elif body.kind=='preference': s.setdefault('preferences',{})[actor]=body.value
+        elif body.kind=='cart_line':
+            if s.get('checkout'): raise HTTPException(409,'Checkout freezes cart edits')
+            try: line=CartLine.model_validate_json(body.value)
+            except ValueError: raise HTTPException(422,'Invalid cart line')
+            if not any(p['id']==line.product and line.variant in p['variants'] for p in catalog): raise HTTPException(422,'Unknown merchant offer or variant')
+            if line.quantity>stock(line.product,line.variant): raise HTTPException(409,'Out of stock')
+            lines=[i for i in s['cart'] if (i['product'],i['variant'])!=(line.product,line.variant)]
+            if line.quantity: lines.append(line.model_dump())
+            s['cart']=lines
         elif body.kind in ['cart','accept_proposal']:
             if s.get('checkout'): raise HTTPException(409,'Checkout freezes cart edits')
             if body.kind=='accept_proposal':
@@ -110,6 +131,7 @@ def command(r:str,body:Command,request:Request):
                 value=proposal['product']
             else: value=body.value
             if value not in [p['id'] for p in catalog]: raise HTTPException(422,'Unknown product')
+            if stock(value,'standard')<1: raise HTTPException(409,'Out of stock')
             s['cart']=[dict(product=value,variant='standard',quantity=1)]
         elif body.kind=='chat': s['messages'].append(dict(actor=actor,text=body.value))
         else: raise HTTPException(422,'Unknown command')
@@ -146,6 +168,8 @@ async def agent(r:str,body:Ask,request:Request):
         if state['revision']!=body.revision: raise HTTPException(409,'Room focus changed; clarify your request')
         if r in busy: raise HTTPException(409,'Agent busy, retry shortly')
         busy.add(r)
+    deadline=time.monotonic()+40
+    turn_proposals=[]
     try:
         from google import genai
         from google.genai import types
@@ -181,7 +205,7 @@ async def agent(r:str,body:Ask,request:Request):
             with lock:
                 s=load(r); s['revision']+=1
                 proposal=dict(id=secrets.token_urlsafe(12),product=product_id,revision=s['revision'],proposer=actor)
-                s.setdefault('proposals',[]).append(proposal); save(r,s)
+                s.setdefault('proposals',[]).append(proposal); turn_proposals.append(proposal['id']); save(r,s)
             return proposal
         def suggest_shortlist(product_ids:list[str],reasons:str)->dict:
             """Suggest catalog products without manufacturing human reactions."""
@@ -194,6 +218,7 @@ async def agent(r:str,body:Ask,request:Request):
         def observed(fn):
             @functools.wraps(fn)
             def call(*args,**kwargs):
+                if time.monotonic()>deadline: return {'error':'Agent turn expired'}
                 result=fn(*args,**kwargs)
                 with lock:
                     s=load(r); s.setdefault('activity',[]).append({'tool':fn.__name__,'outcome':'completed'}); s['revision']+=1; save(r,s)
@@ -206,7 +231,8 @@ async def agent(r:str,body:Ask,request:Request):
         result=await asyncio.wait_for(asyncio.to_thread(run),timeout=45)
         with lock:
             s=load(r); s['messages'].extend([dict(actor=actor,text=body.text),dict(actor='ShopSide',text=(result.text or 'No response returned')[:6000])]); s['revision']+=1
-            for proposal in s.get('proposals',[]): proposal['revision']=s['revision']
+            for proposal in s.get('proposals',[]):
+                if proposal['id'] in turn_proposals: proposal['revision']=s['revision']
             save(r,s)
         return {'ok':True}
     except Exception as exc:
@@ -245,9 +271,15 @@ def quote(r:str,request:Request):
         s=payer(r,request)
         if s.get('checkout'): raise HTTPException(409,'An active checkout already exists')
         if not s.get('cart'): raise HTTPException(422,'Cart is empty')
-        items=[dict(**item,price=next(p['price'] for p in catalog if p['id']==item['product'])) for item in s['cart']]
+        items=[]
+        for item in s['cart']:
+            product=next((p for p in catalog if p['id']==item['product']),None)
+            if not product or item['variant'] not in product['variants']: raise HTTPException(409,'Merchant offer changed')
+            if item['quantity']>stock(item['product'],item['variant']): raise HTTPException(409,'Out of stock')
+            items.append(dict(**item,price=product['price'],name=product['name'],offer_id='demo:'+item['product']+':'+item['variant']))
         total=sum(i['price']*i['quantity'] for i in items)
-        p=dict(id=secrets.token_urlsafe(20),room=r,items=items,total=total,currency='USD',expires=time.time()+600,status='quoted',create_id=secrets.token_hex(16),capture_id=secrets.token_hex(16))
+        p=dict(revision=s['revision'],fees=0,id=secrets.token_urlsafe(20),room=r,items=items,total=total,currency='USD',expires=time.time()+600,status='quoted',create_id=secrets.token_hex(16),capture_id=secrets.token_hex(16))
+        for item in items: db.execute('UPDATE inventory SET stock=stock-? WHERE product=? AND variant=?',(item['quantity'],item['product'],item['variant']))
         payment_save(p); s['checkout']={'id':p['id'],'status':'quoted','total':total,'currency':'USD'}; s['revision']+=1; save(r,s)
         return p
 @app.post('/api/rooms/{r}/payments/{id}/{action}')
@@ -260,6 +292,7 @@ async def payment(r:str,id:str,action:str,request:Request):
         if p['status']=='paid': return {'status':'paid','capture':p.get('capture')}
         if action=='cancel':
             if p['status']!='quoted': raise HTTPException(409,'Reconcile payment before cancellation')
+            for item in p['items']: db.execute('UPDATE inventory SET stock=stock+? WHERE product=? AND variant=?',(item['quantity'],item['product'],item['variant']))
             p['status']='cancelled'; payment_save(p); s['checkout']=None; s['revision']+=1; save(r,s); return {'status':'cancelled'}
         if action=='create' and time.time()>p['expires']: raise HTTPException(409,'Quote expired; cancel and request a new quote')
         payment_busy.add(id)
@@ -269,7 +302,7 @@ async def payment(r:str,id:str,action:str,request:Request):
             p['status']='creating'; payment_save(p)
             result=await paypal('POST','/v2/checkout/orders',{'intent':'CAPTURE','purchase_units':[{'reference_id':id,'payee':{'merchant_id':os.environ.get('PAYPAL_MERCHANT_ID','')},'amount':{'currency_code':'USD','value':amount}}]},p['create_id'])
             p['provider_id']=result['id']; p['status']='approval'; payment_save(p)
-        elif action=='capture':
+        elif action=='capture' and p['status']!='pending':
             if not p.get('provider_id'): raise HTTPException(409,'Create order first')
             p['status']='pending'; payment_save(p)
             await paypal('POST','/v2/checkout/orders/'+p['provider_id']+'/capture',{},p['capture_id'])
@@ -298,3 +331,11 @@ def discover(r:str,body:Search,request:Request):
 @app.get('/api/rooms/{r}/discovery/{product_id}')
 def detail(r:str,product_id:str,request:Request):
     auth(r,request); return product_details(product_id)
+
+@app.get('/api/rooms/{r}/checkout')
+def current_checkout(r:str,request:Request):
+    with lock:
+        s=payer(r,request)
+        if not s.get('checkout'): return None
+        p=payment_load(s['checkout']['id'],r)
+        return {k:p.get(k) for k in ['id','revision','items','total','fees','currency','expires','status','capture']}

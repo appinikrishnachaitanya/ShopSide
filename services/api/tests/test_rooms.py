@@ -78,3 +78,18 @@ def test_missing_discovery_key_is_explicit(monkeypatch):
     monkeypatch.delenv('CHANNEL3_API_KEY',raising=False)
     a=TestClient(app); result=a.post('/api/rooms',json={'name':'A'}).json()
     assert a.post('/api/rooms/'+result['room']['id']+'/discovery',json={'query':'headphones'}).status_code==503
+
+def test_variant_quantity_reservation_cancel_and_replay():
+    import app.main as main
+    a=TestClient(app); r=a.post('/api/rooms',json={'name':'Payer'}).json()['room']['id']; base='/api/rooms/'+r
+    import json
+    before=main.stock('7','midnight')
+    line={'product':'7','variant':'midnight','quantity':2}
+    assert a.post(base+'/commands',json={'command_id':'variant','revision':0,'kind':'cart_line','value':json.dumps(line)}).status_code==200
+    q=a.post(base+'/quote').json()
+    assert q['total']==17000 and q['items'][0]['variant']=='midnight'
+    assert main.stock('7','midnight')==before-2
+    assert a.post(base+'/payments/'+q['id']+'/cancel').status_code==200
+    assert main.stock('7','midnight')==before
+    assert a.post(base+'/payments/'+q['id']+'/create').status_code==409
+    assert a.post(base+'/payments/'+q['id']+'/cancel').status_code==409
