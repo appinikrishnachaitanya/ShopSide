@@ -1,7 +1,31 @@
 """Validated state for a shared move-in mission and exact-cent agreements."""
 from datetime import date
+from decimal import Decimal, InvalidOperation
+import re
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+# Recognize only a single, explicitly limited USD amount. Ambiguous ranges,
+# non-USD currencies and per-item/month amounts remain for the model/user.
+_USD_AMOUNT=re.compile(r"(?i)(?:\$\s*|\bUSD\s*)(?P<amount>(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?)(?!\d|[.,]\d)")
+_BUDGET_PREFIX=re.compile(r"(?i)\b(?:under|below|up\s+to|at\s+most|no\s+more\s+than|max(?:imum)?|budget(?:\s+of|\s+is|\s+up\s+to)?|spend(?:ing)?\s+(?:under|up\s+to|at\s+most))\s*[:=]?\s*$")
+
+def explicit_initial_usd_budget(text:str)->int|None:
+    if re.search(r"(?i)[£€₹¥]|\b(?:CAD|AUD|NZD|EUR|GBP|INR|JPY)\b",text):return None
+    matches=list(_USD_AMOUNT.finditer(text))
+    if len(matches)!=1:return None
+    match=matches[0];before=text[max(0,match.start()-60):match.start()];after=text[match.end():match.end()+40]
+    prefix=_BUDGET_PREFIX.search(before)
+    suffix=re.match(r"(?i)^\s*(?:total\s+)?budget\b",after)
+    if not prefix and not suffix:return None
+    if prefix and re.search(r"(?i)\bnot\s*$",before[:prefix.start()]):return None
+    if re.match(r"(?i)^\s*(?:(?:for\s+)?each\b|per\b|/)",after):return None
+    if re.search(r"(?i)\b(?:rent|income|salary|deposit|delivery|shipping|tax)\s+(?:under|below|up\s+to|at\s+most)\s*$",before):return None
+    try:
+        cents=int(Decimal(match.group('amount').replace(',',''))*100)
+    except (InvalidOperation,ValueError):return None
+    return cents if 0<=cents<=100000000 else None
 
 class Mission(BaseModel):
     model_config=ConfigDict(extra='forbid')

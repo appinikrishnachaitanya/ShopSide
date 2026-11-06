@@ -4,10 +4,12 @@ test("two people share a move-in plan and explicitly approve a home item", async
   const a=await browser.newContext(); const b=await browser.newContext({viewport:{width:390,height:844}});
   const first=await a.newPage(); const second=await b.newPage();
   await first.goto(base);await first.getByLabel("Your name").fill("Avery");await first.getByRole("button",{name:"Create your room"}).click();
+  await first.getByRole("button",{name:"Plan",exact:true}).click();
   await expect(first.getByLabel("Move-In Studio")).toBeVisible();
   const id=new URL(first.url()).searchParams.get("room");const state=await (await first.request.get(base+"/api/rooms/"+id)).json();
   await second.goto(base+"?invite="+state.invite);await second.getByLabel("Your name").fill("Blair");await second.getByRole("button",{name:"Join your friend"}).click();
   await expect(first.getByText("Blair",{exact:true}).first()).toBeVisible();
+  await second.getByRole("button",{name:"Plan",exact:true}).click();
   await first.getByRole("button",{name:"Add focused item to plan"}).click();
   const item=first.locator('.move-item').filter({hasText:'Home Office Desk Lamp'});
   await expect(item).toBeVisible();await expect(second.locator('.move-item').filter({hasText:'Home Office Desk Lamp'})).toBeVisible();
@@ -15,7 +17,7 @@ test("two people share a move-in plan and explicitly approve a home item", async
   await expect(second.locator('.move-item').getByText('Avery: approved')).toBeVisible();
   await second.locator('.move-item').getByRole('button',{name:'I approve'}).click();
   await expect(item.getByText('agreed',{exact:true})).toBeVisible();
-  await first.reload();await expect(first.locator('.move-item').getByText('agreed',{exact:true})).toBeVisible();
+  await first.reload();await first.getByRole('button',{name:'Plan',exact:true}).click();await expect(first.locator('.move-item').getByText('agreed',{exact:true})).toBeVisible();
   expect(await second.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();
   await a.close();await b.close();
 });

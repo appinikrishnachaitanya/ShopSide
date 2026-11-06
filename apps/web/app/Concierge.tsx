@@ -1,4 +1,5 @@
 "use client";
+import { sessionFetch } from "./lib/session";
 import { useState } from "react";
 import { ArrowRight, Sparkles } from "lucide-react";
 export default function Concierge({
@@ -17,7 +18,7 @@ export default function Concierge({
     setBusy(true);
     setError("");
     try {
-      const response = await fetch("/api/rooms/" + room.id + "/concierge", {
+      const response = await sessionFetch("/api/rooms/" + room.id + "/concierge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

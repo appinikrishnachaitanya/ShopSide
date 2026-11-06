@@ -136,3 +136,39 @@ def test_four_member_room_requires_every_member_to_approve():
     assert action(members[3],'d').status_code==200
     state=members[0].get(base).json()
     assert state['people']==['A','B','C','D'] and state['move_in']['items']['11']['status']=='agreed'
+
+@pytest.mark.parametrize(('text','expected'),[
+    ('We need a home office under $700.',70000),
+    ('Our budget is $1,200.50 for the apartment',120050),
+    ('We can spend up to USD 700',70000),
+    ('A budget between $500 and $700',None),
+    ('Our budget is under £700',None),
+    ('A desk under $700 each',None),
+    ('Under $700 for each item',None),
+    ('Rent under $700',None),
+    ('Not under $700',None),
+    ('A $700 desk',None),
+])
+def test_explicit_initial_budget_is_conservative(text,expected):
+    from app.move_in import explicit_initial_usd_budget
+    assert explicit_initial_usd_budget(text)==expected
+
+def test_initial_budget_survives_model_omission_and_failure(monkeypatch):
+    import app.main as main
+    import json
+    request='We need a home office and kitchen under $700.'
+    client=TestClient(app)
+    room=client.post('/api/rooms',json={'name':'A','mode':'move_in','initial_request':request}).json()['room']
+    base='/api/rooms/'+room['id']
+    assert room['move_in']['mission']['budget_cents']==70000
+    class Models:
+        def generate_content(self,**kwargs):return SimpleNamespace(text=json.dumps({'mission':Mission().model_dump(mode='json'),'question':'What is most important?'}))
+    monkeypatch.setenv('GEMINI_MODEL','test')
+    monkeypatch.setattr(main,'configured_client',lambda:SimpleNamespace(models=Models(),close=lambda:None))
+    assert client.post(base+'/move-in/turn',json={'text':request,'revision':0,'command_id':'turn'}).status_code==200
+    assert client.get(base).json()['move_in']['mission']['budget_cents']==70000
+    other=client.post('/api/rooms',json={'name':'B','mode':'move_in','initial_request':request}).json()['room'];other_base='/api/rooms/'+other['id']
+    def fail():raise RuntimeError('provider offline')
+    monkeypatch.setattr(main,'configured_client',fail)
+    assert client.post(other_base+'/move-in/turn',json={'text':request,'revision':0,'command_id':'turn'}).status_code==502
+    assert client.get(other_base).json()['move_in']['mission']['budget_cents']==70000

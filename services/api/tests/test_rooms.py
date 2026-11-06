@@ -259,3 +259,47 @@ def test_family_voice_signaling_targets_only_intended_member():
         assert sockets[3].receive_json()=={'type':'offer','payload':{'sdp':'private'},'peer':'A'}
         sockets[3].send_json({'type':'answer','to':'A','payload':{'sdp':'reply'}})
         assert sockets[0].receive_json()=={'type':'answer','payload':{'sdp':'reply'},'peer':'D'}
+
+def test_tab_scoped_memberships_survive_shared_browser_cookies():
+    client=TestClient(app)
+    first='a'*32;second='b'*32
+    one={'X-ShopSide-Session':first};two={'X-ShopSide-Session':second}
+    created=client.post('/api/rooms',json={'name':'A'},headers=one).json();base='/api/rooms/'+created['room']['id']
+    assert client.post('/api/join/'+created['invite'],json={'name':'B'},headers=two).status_code==200
+    assert client.get(base+'/me',headers=one).json()=={'name':'A','is_payer':True}
+    assert client.get(base+'/me',headers=two).json()=={'name':'B','is_payer':False}
+    assert client.get(base+'/me').json()['name']=='B'  # Existing legacy client.
+    state=client.get(base,headers=one).json()
+    assert client.post(base+'/commands',headers=one,json={'kind':'chat','value':'Hello from A','revision':state['revision'],'command_id':'chat-a'}).status_code==200
+    state=client.get(base,headers=two).json()
+    assert client.post(base+'/commands',headers=two,json={'kind':'chat','value':'Hello from B','revision':state['revision'],'command_id':'chat-b'}).status_code==200
+    assert client.get(base,headers=one).json()['messages']==[{'actor':'A','text':'Hello from A'},{'actor':'B','text':'Hello from B'}]
+    assert client.get(base+'/me',headers={'X-ShopSide-Session':'c'*32}).status_code==403
+    assert client.get(base+'/me',headers={'X-ShopSide-Session':'invalid'}).status_code==400
+    assert client.post(base+'/session',headers=one).status_code==200
+    assert client.get(base+'/me',headers=one).json()['name']=='A'
+
+def test_legacy_membership_can_upgrade_to_a_tab_session():
+    client=TestClient(app)
+    created=client.post('/api/rooms',json={'name':'Legacy'}).json();base='/api/rooms/'+created['room']['id']
+    headers={'X-ShopSide-Session':'d'*32}
+    assert client.get(base+'/me',headers=headers).status_code==403
+    assert client.post(base+'/session',headers=headers).status_code==200
+    assert client.get(base+'/me',headers=headers).json()['name']=='Legacy'
+
+def test_duplicate_names_ignore_case_and_whitespace():
+    a,b=TestClient(app),TestClient(app)
+    created=a.post('/api/rooms',json={'name':'  Alice  '}).json()
+    assert created['room']['people']==['Alice']
+    assert b.post('/api/join/'+created['invite'],json={'name':' ALICE '}).status_code==409
+
+def test_tab_scoped_voice_signaling_uses_each_membership():
+    client=TestClient(app);one={'X-ShopSide-Session':'a'*32};two={'X-ShopSide-Session':'b'*32}
+    created=client.post('/api/rooms',json={'name':'A'},headers=one).json();r=created['room']['id']
+    assert client.post('/api/join/'+created['invite'],json={'name':'B'},headers=two).status_code==200
+    origin={'origin':'http://localhost:3000'}
+    with client.websocket_connect('/api/rooms/'+r+'/call?session='+('a'*32),headers=origin) as a:
+        with client.websocket_connect('/api/rooms/'+r+'/call?session='+('b'*32),headers=origin) as b:
+            assert a.receive_json()=={'type':'peer_ready','peer':'B'}
+            a.send_json({'type':'offer','to':'B','payload':{'sdp':'test'}})
+            assert b.receive_json()=={'type':'offer','payload':{'sdp':'test'},'peer':'A'}

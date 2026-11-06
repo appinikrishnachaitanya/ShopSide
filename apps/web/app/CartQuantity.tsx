@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 export default function CartQuantity({
   item,
   disabled,
@@ -12,7 +12,17 @@ export default function CartQuantity({
   remove: () => void;
 }) {
   const [quantity, setQuantity] = useState(String(item.quantity));
-  useEffect(() => setQuantity(String(item.quantity)), [item.quantity]);
+  const editing = useRef(false);
+  useEffect(() => {
+    setQuantity(current => {
+      const latest = String(item.quantity);
+      if (!editing.current || current === latest) {
+        editing.current = false;
+        return latest;
+      }
+      return current;
+    });
+  }, [item.quantity]);
   const value = Number(quantity);
   const valid = Number.isInteger(value) && value >= 1 && value <= 10;
   return (
@@ -26,12 +36,12 @@ export default function CartQuantity({
           max="10"
           value={quantity}
           disabled={disabled}
-          onChange={(e) => setQuantity(e.target.value)}
+          onChange={(e) => { editing.current = true; setQuantity(e.target.value); }}
         />
       </label>
       <button
         disabled={disabled || !valid || value === item.quantity}
-        onClick={() => update(value)}
+        onClick={() => { editing.current = false; update(value); }}
       >
         Update quantity
       </button>

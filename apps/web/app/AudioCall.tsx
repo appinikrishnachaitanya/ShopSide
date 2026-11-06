@@ -1,4 +1,5 @@
 "use client";
+import { sessionFetch, sessionSocket } from "./lib/session";
 import { useEffect, useRef, useState } from "react";
 
 type Remote = { name:string; stream:MediaStream };
@@ -17,8 +18,8 @@ export default function AudioCall({roomId,online}:{roomId:string;online:boolean}
     try{
       setError("");setStatus("joining");
       const media=await navigator.mediaDevices.getUserMedia({audio:true,video:false});stream.current=media;
-      const config=await fetch('/api/rooms/'+roomId+'/call-config');if(!config.ok)throw Error('Voice configuration unavailable');const ice=await config.json();
-      const socket=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/api/rooms/'+roomId+'/call');ws.current=socket;
+      const config=await sessionFetch('/api/rooms/'+roomId+'/call-config');if(!config.ok)throw Error('Voice configuration unavailable');const ice=await config.json();
+      const socket=sessionSocket('/api/rooms/'+roomId+'/call');ws.current=socket;
       const send=(to:string,type:string,payload?:unknown)=>{if(socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({to,type,payload}));};
       function connection(name:string){
         const existing=peers.current.get(name);if(existing)return existing;

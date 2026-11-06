@@ -1,12 +1,12 @@
-import json, os, secrets, threading, asyncio, time
+import json, os, secrets, threading, asyncio, time, re
 from datetime import datetime, timezone
 from fastapi import WebSocket, WebSocketDisconnect
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from .database import Database, make_engine
 from .discovery import Search, AdvancedSearch, search_products, advanced_search, product_details, similar_products
 from .ai_config import configured_client
-from .move_in import Mission, MissionResponse, MissionTurn, MissionEdit, PlanAction, Allocation, PercentageAllocation, allocate_percentages, RelocationPolicy, PolicyCheck, policy_eligibility
+from .move_in import Mission, MissionResponse, MissionTurn, MissionEdit, PlanAction, Allocation, PercentageAllocation, allocate_percentages, RelocationPolicy, PolicyCheck, policy_eligibility, explicit_initial_usd_budget
 
 app = FastAPI(title='ShopSide')
 limits={}
@@ -54,6 +54,7 @@ class CartLine(BaseModel):
     variant:str='standard'
     quantity:int=Field(ge=0,le=10,strict=True)
 class Entry(BaseModel):
+    model_config=ConfigDict(str_strip_whitespace=True)
     name: str = Field(min_length=1,max_length=40)
     title: str = Field(default='Shopping together',max_length=100)
     initial_request: str = Field(default='',max_length=2000)
@@ -80,18 +81,46 @@ def load(r):
 def save(r,s,commit=True):
     db.execute('UPDATE rooms SET state=? WHERE id=?',(json.dumps(s),r))
     if commit: db.commit(); notify(r)
+def tab_session(request):
+    value=request.headers.get('x-shopside-session') or request.query_params.get('session')
+    if value and not re.fullmatch(r'[a-f0-9]{32}',value):raise HTTPException(400,'Invalid browser session')
+    return value
+
 def auth(r,request):
-    row=db.execute('SELECT name FROM members WHERE room=? AND token=?',(r,request.cookies.get('membership',''))).fetchone()
+    session=tab_session(request)
+    cookie='membership_'+session if session else 'membership'
+    row=db.execute('SELECT name FROM members WHERE room=? AND token=?',(r,request.cookies.get(cookie,''))).fetchone()
     if not row: raise HTTPException(403,'Membership required')
     return row[0]
-def member(response,r,name):
+
+def set_membership_cookie(response,name,token):
+    response.set_cookie(name,token,secure=os.getenv('COOKIE_SECURE','false').lower()=='true',httponly=True,samesite='lax',max_age=604800)
+
+def member(response,r,name,request):
     token=secrets.token_urlsafe(32)
     db.execute('INSERT INTO members VALUES(?,?,?)',(token,r,name)); db.commit()
-    response.set_cookie('membership',token,secure=os.getenv('COOKIE_SECURE','false').lower()=='true',httponly=True,samesite='lax',max_age=604800)
+    session=tab_session(request)
+    if session:set_membership_cookie(response,'membership_'+session,token)
+    # Legacy cookie supports existing clients during a rolling frontend update.
+    set_membership_cookie(response,'membership',token)
+
+@app.post('/api/rooms/{r}/session')
+def upgrade_session(r:str,request:Request,response:Response):
+    session=tab_session(request)
+    if not session:raise HTTPException(400,'Browser session required')
+    with lock:
+        specific=request.cookies.get('membership_'+session)
+        token=specific or request.cookies.get('membership','')
+        row=db.execute('SELECT name FROM members WHERE room=? AND token=?',(r,token)).fetchone()
+        if not row:raise HTTPException(403,'Membership required; reopen your invitation')
+        if not specific:set_membership_cookie(response,'membership_'+session,token)
+    return {'ok':True}
+
 @app.get('/api/catalog')
 def products(): return catalog
 @app.post('/api/rooms')
-def create(body:Entry,response:Response):
+def create(body:Entry,response:Response,request:Request):
+    tab_session(request)
     with lock:
         r=secrets.token_urlsafe(18); invite=secrets.token_urlsafe(32)
         s=dict(invite=invite,cart=[],external_cart=[],comparison=[],budget=None,preferences={},proposals=[],activity=[],checkout=None,id=r,title=body.title,revision=0,people=[body.name],payer=body.name,focus='0',shortlist=[],reactions={},messages=[],commands=[])
@@ -103,20 +132,23 @@ def create(body:Entry,response:Response):
         s['mode']=body.mode
         if body.mode=='move_in':s['focus']='11'
         if body.mode=='move_in':
-            s['move_in']={'mission':Mission(budget_cents=s['relocation']['policy']['allowance_cents'] if s.get('relocation') else None).model_dump(mode='json'),'history':([{'actor':body.name,'text':body.initial_request.strip()}] if body.initial_request.strip() else []),'question_count':0,'question':'','items':{},'timeline':[]}
+            initial_budget=explicit_initial_usd_budget(body.initial_request)
+            if initial_budget is None and s.get('relocation'):initial_budget=s['relocation']['policy']['allowance_cents']
+            s['move_in']={'mission':Mission(budget_cents=initial_budget).model_dump(mode='json'),'history':([{'actor':body.name,'text':body.initial_request.strip()}] if body.initial_request.strip() else []),'question_count':0,'question':'','items':{},'timeline':[]}
         if body.initial_request.strip() and body.mode=='general':
             s['shopping_journey']={'history':[{'actor':body.name,'text':body.initial_request.strip()}],'status':'draft','question_count':0}
         db.execute('INSERT INTO rooms VALUES(?,?,?)',(r,invite,json.dumps(s)))
-        member(response,r,body.name)
+        member(response,r,body.name,request)
         return dict(room=s,invite=invite)
 @app.post('/api/join/{invite}')
-def join(invite:str,body:Entry,response:Response):
+def join(invite:str,body:Entry,response:Response,request:Request):
+    tab_session(request)
     with lock:
         row=db.execute('SELECT id FROM rooms WHERE invite=?',(invite,)).fetchone()
         if not row: raise HTTPException(404,'Invalid invitation')
         r=row[0]; s=load(r)
         if len(s['people'])>=4: raise HTTPException(409,'Room is full (maximum four people)')
-        if body.name in s['people']: raise HTTPException(409,'Choose a different name')
+        if any(name.casefold()==body.name.casefold() for name in s['people']): raise HTTPException(409,'Choose a different name')
         s['people'].append(body.name)
         # A new participant has not approved previous decisions.
         s['agreed_product']=None
@@ -124,7 +156,7 @@ def join(invite:str,body:Entry,response:Response):
             if item.get('status')=='agreed':
                 item['status']='proposed'
                 item.pop('committed_at',None)
-        s['revision']+=1; save(r,s); member(response,r,body.name)
+        s['revision']+=1; save(r,s); member(response,r,body.name,request)
         return s
 @app.get('/api/rooms/{r}')
 def room(r:str,request:Request):
@@ -246,7 +278,7 @@ async def live(ws:WebSocket,r:str):
             for task in pending: task.cancel()
             await asyncio.gather(*pending,return_exceptions=True)
             if receiver in done and receiver.result()['type']=='websocket.disconnect': break
-    except (WebSocketDisconnect,RuntimeError): pass
+    except (WebSocketDisconnect,RuntimeError,asyncio.CancelledError): pass
     finally:
         with lock:
             subscribers.get(r,set()).discard(entry)
@@ -588,6 +620,12 @@ async def move_in_turn(r:str,body:MissionTurn,request:Request):
             finally:client.close()
         response=await asyncio.wait_for(asyncio.to_thread(generate),timeout=45)
         result=MissionResponse.model_validate_json(response.text)
+        # On the first turn, keep an explicit unambiguous limit even if the model omits it.
+        if len(prior.get('history',[]))==1 and prior['history'][0]=={'actor':actor,'text':body.text.strip()}:
+            explicit_budget=explicit_initial_usd_budget(body.text)
+            if explicit_budget is not None:
+                result.mission.budget_cents=explicit_budget
+                result.mission.currency='USD'
         question=result.question.strip() if count<4 else ''
         if '?' in question:question=question.split('?',1)[0]+'?'
         if question and question in [h.get('text') for h in history if h.get('actor')=='ShopSide']:question=''

@@ -1,4 +1,5 @@
 "use client";
+import { sessionFetch } from "./lib/session";
 import { useEffect, useState } from "react";
 export default function ProductDetails({
   product,
@@ -17,7 +18,7 @@ export default function ProductDetails({
     let active = true;
     setDetail(null);
     setError("");
-    fetch(
+    sessionFetch(
       "/api/rooms/" +
         room.id +
         "/discovery/" +
@@ -46,7 +47,7 @@ export default function ProductDetails({
     setError("");
     setNotice("");
     try {
-      const response = await fetch(
+      const response = await sessionFetch(
         "/api/rooms/" + room.id + "/product/" + kind,
         {
           method: "POST",
