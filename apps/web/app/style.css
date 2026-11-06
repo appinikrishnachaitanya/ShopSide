@@ -1707,3 +1707,44 @@ a {
   );
   mask-image: radial-gradient(ellipse at center, #000 53%, transparent 76%);
 }
+.cart-notice {
+  position: sticky;
+  top: 76px;
+  z-index: 19;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 0;
+  padding: 12px 5%;
+  background: #203a22;
+  color: #d7f7cf;
+  font-size: 12px;
+}
+.cart-notice button {
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 20px;
+}
+.retailer-copy {
+  color: #c5d2bf;
+  font-size: 11px;
+  flex: 1;
+}
+.cart-line a {
+  color: #c5f874;
+}
+.cart-line strong {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.cart-notice span {
+  flex: 1;
+}
+.cart-notice .view-cart {
+  font-size: 11px;
+  font-weight: 700;
+  color: #d7f7cf;
+  text-decoration: underline;
+  margin: 0 14px;
+}

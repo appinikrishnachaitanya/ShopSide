@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import DecisionBoard from "./DecisionBoard";
 import AudioCall from "./AudioCall";
+import CartQuantity from "./CartQuantity";
 import Recommendations from "./Recommendations";
 import {
   ArrowDown,
@@ -61,6 +62,8 @@ export default function Home() {
         .catch((e) => E(e.message));
   }, []);
   const [copied, CopyDone] = useState(false);
+  const [cartOpen, setCartOpen] = useState(false),
+    [notice, setNotice] = useState("");
   const [me, M] = useState<any>(null),
     [variant, Variant] = useState("standard"),
     [quantity, Quantity] = useState(1),
@@ -86,7 +89,10 @@ export default function Home() {
         "/live",
     );
     ws.onmessage = (e) => {
-      S(JSON.parse(e.data));
+      const incoming = JSON.parse(e.data);
+      S((current: any) =>
+        !current || incoming.revision >= current.revision ? incoming : current,
+      );
       O(true);
     };
     ws.onclose = () => O(false);
@@ -154,12 +160,46 @@ export default function Home() {
         revision: room.revision,
         command_id: crypto.randomUUID(),
       });
-      S(await api("rooms/" + room.id));
+      const incoming = await api("rooms/" + room.id);
+      S((current: any) =>
+        !current || incoming.revision >= current.revision ? incoming : current,
+      );
+      if (
+        ["cart_line", "external_cart_add", "accept_proposal"].includes(kind)
+      ) {
+        setCartOpen(true);
+        const line = kind === "cart_line" ? JSON.parse(value) : null;
+        const existed =
+          line &&
+          room.cart?.some(
+            (item: any) =>
+              item.product === line.product && item.variant === line.variant,
+          );
+        setNotice(
+          kind === "external_cart_add"
+            ? "Added to your shared cart. This item is purchased at the retailer."
+            : line?.quantity === 0
+              ? "Removed from your shared cart."
+              : existed
+                ? "Cart quantity updated."
+                : "Added to your shared cart.",
+        );
+      } else if (kind === "external_cart_remove")
+        setNotice("Removed from your shared cart.");
       E("");
     } catch (e: any) {
       E(e.message);
+      if (String(e.message).includes("Room changed")) {
+        try {
+          const fresh = await api("rooms/" + room.id);
+          S((current: any) =>
+            !current || fresh.revision >= current.revision ? fresh : current,
+          );
+        } catch {}
+      }
     }
   }
+
   const all = [...catalog, ...(room?.discovery || [])];
   const p = all.find((p) => p.id === room?.focus);
   async function discover() {
@@ -233,6 +273,27 @@ export default function Home() {
           </button>
         )}
       </header>
+      {notice && (
+        <p role="status" className="cart-notice">
+          <span>{notice}</span>
+          <button
+            className="view-cart"
+            onClick={() =>
+              document
+                .querySelector(".cart-details")
+                ?.scrollIntoView({ behavior: "smooth", block: "nearest" })
+            }
+          >
+            View cart
+          </button>
+          <button
+            aria-label="Dismiss notification"
+            onClick={() => setNotice("")}
+          >
+            ×
+          </button>
+        </p>
+      )}
       {error && (
         <p role="alert" className="error">
           {error}
@@ -469,7 +530,20 @@ export default function Home() {
                   </p>
                 )}
               </article>
-              {p?.provenance !== "channel3" && (
+              {p?.provenance === "channel3" ? (
+                <div className="cart-controls">
+                  <span className="retailer-copy">
+                    Retailer item · purchased on the retailer’s site
+                  </span>
+                  <button
+                    className="cart-add"
+                    disabled={!online || !!room.checkout || !p?.offers?.length}
+                    onClick={() => command("external_cart_add", p.id)}
+                  >
+                    Add to cart <ArrowRight size={15} />
+                  </button>
+                </div>
+              ) : (
                 <div className="cart-controls">
                   <div className="cart-controls-title">
                     <span className="small-icon">
@@ -504,7 +578,14 @@ export default function Home() {
                   </label>
                   <button
                     className="cart-add"
-                    disabled={!online || !!room.checkout}
+                    disabled={
+                      !online ||
+                      !!room.checkout ||
+                      !p ||
+                      !Number.isInteger(quantity) ||
+                      quantity < 1 ||
+                      quantity > 10
+                    }
                     onClick={() =>
                       command(
                         "cart_line",
@@ -562,6 +643,18 @@ export default function Home() {
                               onClick={() => command("focus", item.id)}
                             >
                               Look at this
+                            </button>
+                            <button
+                              disabled={
+                                !online ||
+                                !!room.checkout ||
+                                !item.offers?.length
+                              }
+                              onClick={() =>
+                                command("external_cart_add", item.id)
+                              }
+                            >
+                              Add to cart
                             </button>
                             <button
                               disabled={!online}
@@ -857,15 +950,26 @@ export default function Home() {
                   )) || <p>No activity yet.</p>}
                 </div>
               </details>
-              <details className="side-details cart-details" open={!!quote}>
+              <details
+                className="side-details cart-details"
+                open={cartOpen || !!quote}
+                onToggle={(e) => {
+                  if (!quote) setCartOpen(e.currentTarget.open);
+                }}
+              >
                 <summary>
                   <span>
                     <ShoppingBag size={15} /> Shared cart
                   </span>
-                  <span className="cart-count">{room.cart?.length || 0}</span>
+                  <span className="cart-count">
+                    {(room.cart || []).reduce(
+                      (count: number, item: any) => count + item.quantity,
+                      0,
+                    ) + (room.external_cart?.length || 0)}
+                  </span>
                 </summary>
                 <div>
-                  {room.cart?.length === 0 && (
+                  {room.cart?.length === 0 && !room.external_cart?.length && (
                     <p>
                       Nothing in your cart yet. Find something you both love.
                     </p>
@@ -879,41 +983,59 @@ export default function Home() {
                         {catalog.find((p) => p.id === item.product)?.name} ·{" "}
                         {item.variant}
                       </p>
-                      <label>
-                        Quantity{" "}
-                        <input
-                          aria-label={
-                            "Quantity " + item.product + " " + item.variant
-                          }
-                          type="number"
-                          min="0"
-                          max="10"
-                          defaultValue={item.quantity}
-                          disabled={!online || !!room.checkout}
-                          onBlur={(e) =>
-                            command(
-                              "cart_line",
-                              JSON.stringify({
-                                ...item,
-                                quantity: Number(e.target.value),
-                              }),
-                            )
-                          }
-                        />
-                      </label>
-                      <button
+                      <CartQuantity
+                        item={item}
                         disabled={!online || !!room.checkout}
-                        onClick={() =>
+                        update={(quantity) =>
+                          command(
+                            "cart_line",
+                            JSON.stringify({ ...item, quantity }),
+                          )
+                        }
+                        remove={() =>
                           command(
                             "cart_line",
                             JSON.stringify({ ...item, quantity: 0 }),
                           )
                         }
-                      >
-                        Remove item
-                      </button>
+                      />
                     </div>
                   ))}
+                  {!!room.external_cart?.length && (
+                    <section aria-label="Retailer items">
+                      <h3>Retailer items</h3>
+                      <p>
+                        Checkout happens on the retailer’s site; excluded from
+                        PayPal sandbox checkout.
+                      </p>
+                      {room.external_cart.map((item: any) => (
+                        <div className="cart-line" key={item.id}>
+                          <strong>{item.name}</strong>
+                          {item.offers.map((offer: any, i: number) => (
+                            <p key={i}>
+                              <a
+                                href={offer.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                              >
+                                {offer.retailer} · {offer.currency}{" "}
+                                {(offer.price_cents / 100).toFixed(2)} · Visit
+                                retailer ↗
+                              </a>
+                            </p>
+                          ))}
+                          <button
+                            disabled={!online || !!room.checkout}
+                            onClick={() =>
+                              command("external_cart_remove", item.id)
+                            }
+                          >
+                            Remove retailer item
+                          </button>
+                        </div>
+                      ))}
+                    </section>
+                  )}
                   {room.proposals?.map((proposal: any) => (
                     <button
                       key={proposal.id}
@@ -925,7 +1047,11 @@ export default function Home() {
                   ))}
                   <button
                     className="checkout-button"
-                    disabled={!online || !me?.is_payer}
+                    disabled={
+                      !online ||
+                      !me?.is_payer ||
+                      (!room.cart?.length && !room.checkout)
+                    }
                     onClick={checkout}
                   >
                     {me?.is_payer

@@ -72,7 +72,7 @@ def products(): return catalog
 def create(body:Entry,response:Response):
     with lock:
         r=secrets.token_urlsafe(18); invite=secrets.token_urlsafe(32)
-        s=dict(invite=invite,cart=[],comparison=[],budget=None,preferences={},proposals=[],activity=[],checkout=None,id=r,title=body.title,revision=0,people=[body.name],payer=body.name,focus='0',shortlist=[],reactions={},messages=[],commands=[])
+        s=dict(invite=invite,cart=[],external_cart=[],comparison=[],budget=None,preferences={},proposals=[],activity=[],checkout=None,id=r,title=body.title,revision=0,people=[body.name],payer=body.name,focus='0',shortlist=[],reactions={},messages=[],commands=[])
         db.execute('INSERT INTO rooms VALUES(?,?,?)',(r,invite,json.dumps(s)))
         member(response,r,body.name)
         return dict(room=s,invite=invite)
@@ -122,6 +122,16 @@ def command(r:str,body:Command,request:Request):
             if amount<0: raise HTTPException(422,'Invalid budget')
             s['budget']=amount
         elif body.kind=='preference': s.setdefault('preferences',{})[actor]=body.value
+        elif body.kind in ['external_cart_add','external_cart_remove']:
+            if s.get('checkout'): raise HTTPException(409,'Checkout freezes cart edits')
+            saved=s.setdefault('external_cart',[])
+            if body.kind=='external_cart_add':
+                product=next((p for p in s.get('discovery',[]) if p['id']==body.value and p.get('provenance')=='channel3'),None)
+                if not product: raise HTTPException(422,'Select a current retailer listing')
+                if not product.get('offers'): raise HTTPException(409,'No retailer checkout link is available')
+                s['external_cart']=[item for item in saved if item['id']!=body.value]+[product]
+            else:
+                s['external_cart']=[item for item in saved if item['id']!=body.value]
         elif body.kind=='cart_line':
             if s.get('checkout'): raise HTTPException(409,'Checkout freezes cart edits')
             try: line=CartLine.model_validate_json(body.value)

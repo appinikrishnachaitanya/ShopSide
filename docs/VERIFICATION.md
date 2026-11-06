@@ -35,3 +35,11 @@ Published configuration confirmed: key injection includes aiplatform.googleapis.
 - The Chromium two-context voice test exchanged peer_ready, offer and answer, but no ICE candidates were gathered in this cloud environment (a separate direct Chromium diagnostic returned `iceGatheringState=complete`, zero candidates). Audio connection and mute/leave browser assertions therefore failed and remain unverified; no claim of working cross-network audio is made. Test uses a fake microphone, not an actual human call.
 - Room desktop/mobile browser journey still passed after the UI change. The public Railway deployment has not been performed or tested. The STUN default may require an externally configured TURN relay for restrictive networks.
 - Recommendations use the shared state, including exact product names mentioned by humans, confirmed preferences, shortlist, explicit likes and budget; they do not infer missing product performance facts.
+
+## Cart regression
+- Sample-product cart: desktop/mobile browsers verified add feedback, automatic cart opening, shared quantity changes, exact quote and payer restriction.
+- Live Channel3 cart: two independent browsers verified a real retailer listing can be added, seen by both participants and retained after refresh. Retailer-only carts cannot create a ShopSide PayPal quote; retailer offers remain separate from merchant inventory.
+- SQLite backend: 16 tests passed, one PostgreSQL-specific test skipped. PostgreSQL 17.11: 17 tests passed, including the new cart boundary tests.
+- These are local tests using an isolated database; Cloud Run deployment has not been verified by this check.
+- Expanded desktop/mobile journey: both participants spotlight and shortlist two products, compare them, send chat, refresh and retain the shared state, then change cart quantities and review the same quote.
+- Live ADK journey: a second participant saved a preference and made an actual Vertex AI + Channel3 request; both browser contexts received the two-product comparison and it survived refresh. No mock model or catalog was used for this test.

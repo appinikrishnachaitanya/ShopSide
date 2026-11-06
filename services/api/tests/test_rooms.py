@@ -213,3 +213,39 @@ def test_postgres_connection_recovers_after_server_disconnect():
         assert connection.execute('SELECT pg_terminate_backend(%s)',(pid,)).fetchone()[0]
     with pytest.raises(psycopg.Error): main.db.execute('SELECT 1')
     assert main.db.execute('SELECT 1').fetchone()[0]==1
+
+
+def test_external_cart_is_shared_persisted_and_never_charged(monkeypatch):
+    import app.main as main
+    from app.discovery import normalize
+    item=normalize({'id':'external-1','title':'Retail headphones','offers':[{'url':'https://retailer.example/p','domain':'retailer.example','price':{'price':75,'currency':'USD'}}]})
+    monkeypatch.setattr(main,'search_products',lambda q,max_price=None:[item])
+    a,b=TestClient(app),TestClient(app)
+    result=a.post('/api/rooms',json={'name':'Payer'}).json();base='/api/rooms/'+result['room']['id']
+    b.post('/api/join/'+result['invite'],json={'name':'Friend'})
+    a.post(base+'/discovery',json={'query':'headphones'})
+    rev=a.get(base).json()['revision']
+    assert a.post(base+'/commands',json={'command_id':'add-retailer','revision':rev,'kind':'external_cart_add','value':item['id']}).status_code==200
+    state=b.get(base).json()
+    assert state['external_cart'][0]['id']==item['id']
+    assert state['cart']==[]
+    assert a.post(base+'/quote').status_code==422
+    assert b.post(base+'/commands',json={'command_id':'remove-retailer','revision':state['revision'],'kind':'external_cart_remove','value':item['id']}).status_code==200
+    assert a.get(base).json()['external_cart']==[]
+
+
+def test_retailer_cart_survives_new_search_and_sample_quote_excludes_it(monkeypatch):
+    import app.main as main
+    from app.discovery import normalize
+    item=normalize({'id':'retailer-1','title':'Retail item','offers':[{'url':'https://retailer.example/p','domain':'retailer.example','price':{'price':250,'currency':'USD'}}]})
+    monkeypatch.setattr(main,'search_products',lambda q,max_price=None:[item] if q=='first' else [])
+    a=TestClient(app);r=a.post('/api/rooms',json={'name':'Payer'}).json()['room']['id'];base='/api/rooms/'+r
+    a.post(base+'/discovery',json={'query':'first'})
+    assert a.post(base+'/commands',json={'command_id':'retailer','revision':1,'kind':'external_cart_add','value':item['id']}).status_code==200
+    assert a.post(base+'/discovery',json={'query':'second'}).status_code==200
+    state=a.get(base).json()
+    assert state['external_cart'][0]['id']==item['id']
+    assert a.post(base+'/commands',json={'command_id':'sample','revision':state['revision'],'kind':'cart','value':'0'}).status_code==200
+    quote=a.post(base+'/quote').json()
+    assert quote['total']==8900
+    assert len(quote['items'])==1 and quote['items'][0]['product']=='0'
