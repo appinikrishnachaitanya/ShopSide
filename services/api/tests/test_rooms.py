@@ -146,3 +146,15 @@ def test_adk_coordinates_real_room_tool_with_test_runner(monkeypatch):
     names=[getattr(t,'__name__','') for t in seen['agent'].tools]
     assert 'paypal_order_status' in names
     assert not any(name in names for name in ['create_order','pay_order','capture_order'])
+
+def test_vertex_auth_modes_do_not_mix_api_key_and_adc(monkeypatch):
+    import app.ai_config as config
+    monkeypatch.setenv('AI_PROVIDER','vertex')
+    monkeypatch.setenv('GOOGLE_CLOUD_PROJECT','test-project')
+    monkeypatch.setenv('GOOGLE_CLOUD_LOCATION','global')
+    monkeypatch.setenv('GEMINI_API_KEY','test-key')
+    monkeypatch.setattr(config.genai,'Client',lambda **kwargs:kwargs)
+    assert config.configured_client()=={'vertexai':True,'project':'test-project','location':'global'}
+    monkeypatch.delenv('GOOGLE_CLOUD_PROJECT')
+    monkeypatch.delenv('VERTEX_API_KEY',raising=False)
+    assert config.configured_client()=={'vertexai':True,'api_key':'test-key'}

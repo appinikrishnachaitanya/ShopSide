@@ -22,3 +22,10 @@ Cloud draft contains requirements and required hostnames. Review/save, then publ
 Hosts: api.trychannel3.com, docs.trychannel3.com, generativelanguage.googleapis.com, api-m.sandbox.paypal.com, www.paypal.com, www.sandbox.paypal.com, paypalaihackathon.devpost.com. Existing package-manager access must remain enabled.
 
 AG Studio documentation/SDK/licensing remain blocked pending access to the sponsor page. There is no guessed Studio environment variable. The implemented AG Grid fallback needs no license key.
+
+## GCP Vertex AI / ADK
+`AI_PROVIDER=vertex` is now the default. Standard Vertex AI requires GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION and usable ADC from a configured GCP identity with Vertex permissions; GOOGLE_APPLICATION_CREDENTIALS must refer to a valid supplied credential selector. No GCP identity was present at inspection. A project selector makes the client use ADC, even if a Gemini API key is also present.
+
+Vertex express mode omits GOOGLE_CLOUD_PROJECT and uses VERTEX_API_KEY or GEMINI_API_KEY with vertexai=True. Destination-bound key injection must include aiplatform.googleapis.com. The existing GEMINI_API_KEY secret currently targets only generativelanguage.googleapis.com; edit its destination list in environment settings for express mode. The configuration tool cannot replace that existing binding. Do not add duplicate keys to work around it.
+
+The Gemini Developer API is available only with AI_PROVIDER=developer. A prior Developer API 403 does not establish that a Vertex key is invalid.
