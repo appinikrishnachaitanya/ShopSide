@@ -39,3 +39,6 @@ cd apps/web && npm run build
 The API test exercises two independent cookie clients, unauthorized access, room capacity, shared spotlight/reaction, command deduplication and stale revision rejection. Browser-context and visual checks remain outstanding.
 
 See [verification](docs/VERIFICATION.md), [judge/demo guide](docs/DEMO.md), and [image provenance](fixtures/PROVENANCE.md). This remains a development build, not a completed release.
+
+## Revised sponsor scope
+Channel3 shared discovery and product details are implemented against its published v1 contract. Set `CHANNEL3_API_KEY`; missing credentials show an explicit error. Live products use retailer links and cannot enter demo PayPal checkout. The board uses real AG Grid Community as the revised brief's permitted fallback; AG Studio access remains blocked. See [sponsor status](docs/SPONSOR-STATUS.md) for implementation and verification boundaries.

@@ -56,3 +56,25 @@ def test_verified_capture_and_pending_recovery(monkeypatch):
     assert a.post(url+'/capture').json()['status']=='paid'
     assert len([c for c in calls if c[1].endswith('/capture')])==1
     assert a.get(base).json()['checkout']['status']=='paid'
+
+def test_discovery_shared_and_external_offer_cannot_charge(monkeypatch):
+    import app.main as main
+    from app.discovery import normalize
+    item=normalize({'id':'real-product','title':'Provider headphones','offers':[{'url':'https://retailer.example/item','domain':'retailer.example','price':{'price':99.99,'currency':'USD'}}]})
+    assert item['offers'][0]['price_cents']==9999
+    assert item['merchant_offer'] is None
+    monkeypatch.setattr(main,'search_products',lambda q,max_price=None:[item])
+    a,b=TestClient(app),TestClient(app)
+    result=a.post('/api/rooms',json={'name':'A'}).json(); base='/api/rooms/'+result['room']['id']
+    b.post('/api/join/'+result['invite'],json={'name':'B'})
+    assert a.post(base+'/discovery',json={'query':'headphones'}).status_code==200
+    assert b.get(base).json()['discovery'][0]['provenance']=='channel3'
+    rev=b.get(base).json()['revision']
+    assert a.post(base+'/commands',json={'command_id':'external','revision':rev,'kind':'cart','value':item['id']}).status_code==422
+    assert a.post(base+'/commands',json={'command_id':'spotlight','revision':rev,'kind':'focus','value':item['id']}).status_code==200
+    assert b.get(base).json()['focus']==item['id']
+
+def test_missing_discovery_key_is_explicit(monkeypatch):
+    monkeypatch.delenv('CHANNEL3_API_KEY',raising=False)
+    a=TestClient(app); result=a.post('/api/rooms',json={'name':'A'}).json()
+    assert a.post('/api/rooms/'+result['room']['id']+'/discovery',json={'query':'headphones'}).status_code==503
