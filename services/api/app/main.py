@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .database import Database, make_engine
 from .discovery import Search, AdvancedSearch, search_products, advanced_search, product_details, similar_products
 from .ai_config import configured_client
-from .move_in import Mission, MissionResponse, MissionTurn, MissionEdit, PlanAction, Allocation, PercentageAllocation, allocate_percentages, RelocationPolicy, PolicyCheck, policy_eligibility, explicit_initial_usd_budget
+from .move_in import Mission, MissionResponse, MissionTurn, MissionEdit, PlanAction, Allocation, PercentageAllocation, allocate_percentages, explicit_initial_usd_budget
 
 app = FastAPI(title='ShopSide')
 limits={}
@@ -14,7 +14,7 @@ limits={}
 async def throttle(request,call_next):
     if request.method not in ['GET','HEAD','OPTIONS'] and request.headers.get('origin') and request.headers['origin']!=os.getenv('WEB_ORIGIN','http://localhost:3000'):
         return Response('Origin not allowed',status_code=403)
-    if '/join/' in request.url.path or request.url.path.startswith('/api/relocation/') or request.url.path.endswith(('/agent','/concierge','/move-in/turn','/memory-receipts')):
+    if '/join/' in request.url.path or request.url.path.endswith(('/agent','/concierge','/move-in/turn','/memory-receipts')):
         key=(request.client.host,'ai' if request.url.path.endswith(('/agent','/concierge','/move-in/turn','/memory-receipts')) else 'join')
         now=time.monotonic(); hits=[t for t in limits.get(key,[]) if now-t<60]
         if len(hits)>=10: return Response('Too many attempts; retry in a minute',status_code=429)
@@ -30,7 +30,6 @@ engine=make_engine()
 db=Database(engine)
 db.execute('CREATE TABLE IF NOT EXISTS rooms(id TEXT PRIMARY KEY, invite TEXT UNIQUE, state TEXT)')
 db.execute('CREATE TABLE IF NOT EXISTS members(token TEXT PRIMARY KEY, room TEXT, name TEXT)')
-db.execute('CREATE TABLE IF NOT EXISTS relocation_policies(id TEXT PRIMARY KEY, state TEXT NOT NULL)')
 catalog = [dict(id=str(i), name=n, price=p, currency='USD', description='Fictional sample headphones · ShopSide collection') for i,(n,p) in enumerate([('Sunday Studio',8900),('Everyday Air',6900),('Quiet Hours',9900),('City Rhythm',7900),('Soft Signal',5900),('Open Road',9500),('Little Escape',4900),('Evening Edit',8500),('Atlas Checked Case',15900),('Weekender Cabin Case',11900),('Journey Large Case',18900)])]
 for i,(name,price,category) in enumerate([('Home Office Desk Lamp',3900,'home office'),('Everyday Cookware Set',7900,'kitchen'),('Compact Storage Shelf',5900,'living room'),('Soft Cotton Bedding Set',6900,'bedroom')],start=11):
     catalog.append(dict(id=str(i),name=name,price=price,currency='USD',category=category,image='/products/home-essentials.svg',variant='standard',stock=20,attributes={},evidence='Fictional sandbox merchant product; no goods ship.',description='Fictional home essential · sandbox merchant'))
@@ -59,7 +58,6 @@ class Entry(BaseModel):
     title: str = Field(default='Shopping together',max_length=100)
     initial_request: str = Field(default='',max_length=2000)
     mode: str = Field(default='general',pattern='^(general|move_in)$')
-    relocation_code: str = Field(default='',max_length=100)
 class MarkerReaction(BaseModel):
     product_id:str=Field(min_length=1,max_length=200)
     reaction:str=Field(pattern='^(love|price|size|discuss|clear)$')
@@ -124,16 +122,10 @@ def create(body:Entry,response:Response,request:Request):
     with lock:
         r=secrets.token_urlsafe(18); invite=secrets.token_urlsafe(32)
         s=dict(invite=invite,cart=[],external_cart=[],comparison=[],budget=None,preferences={},proposals=[],activity=[],checkout=None,id=r,title=body.title,revision=0,people=[body.name],payer=body.name,focus='0',shortlist=[],reactions={},messages=[],commands=[])
-        if body.relocation_code:
-            if body.mode!='move_in':raise HTTPException(422,'A relocation allocation requires Move-In Studio')
-            row=db.execute('SELECT state FROM relocation_policies WHERE id=?',(body.relocation_code,)).fetchone()
-            if not row:raise HTTPException(404,'Relocation allocation not found')
-            s['relocation']={'policy_id':body.relocation_code,'policy':json.loads(row[0])}
         s['mode']=body.mode
         if body.mode=='move_in':s['focus']='11'
         if body.mode=='move_in':
             initial_budget=explicit_initial_usd_budget(body.initial_request)
-            if initial_budget is None and s.get('relocation'):initial_budget=s['relocation']['policy']['allowance_cents']
             s['move_in']={'mission':Mission(budget_cents=initial_budget).model_dump(mode='json'),'history':([{'actor':body.name,'text':body.initial_request.strip()}] if body.initial_request.strip() else []),'question_count':0,'question':'','items':{},'timeline':[]}
         if body.initial_request.strip() and body.mode=='general':
             s['shopping_journey']={'history':[{'actor':body.name,'text':body.initial_request.strip()}],'status':'draft','question_count':0}
@@ -441,15 +433,6 @@ def quote(r:str,request:Request):
             if item['quantity']>stock(item['product'],item['variant']): raise HTTPException(409,'Out of stock')
             items.append(dict(**item,price=product['price'],name=product['name'],offer_id='demo:'+item['product']+':'+item['variant']))
         total=sum(i['price']*i['quantity'] for i in items)
-        if s.get('relocation'):
-            policy=RelocationPolicy.model_validate(s['relocation']['policy'])
-            spent=0
-            for item in items:
-                product=next(p for p in catalog if p['id']==item['product'])
-                result=policy_eligibility(policy,product.get('category',''),item['price']*item['quantity'],'USD',spent)
-                if not result['eligible']:raise HTTPException(422,result['reason'])
-                if result['approval_required']:raise HTTPException(409,'Administrator approval is required; approval workflow is not connected')
-                spent+=item['price']*item['quantity']
         p=dict(revision=s['revision'],fees=0,id=secrets.token_urlsafe(20),room=r,payer=s['payer'],items=items,total=total,currency='USD',expires=time.time()+600,status='quoted',create_id=secrets.token_hex(16),capture_id=secrets.token_hex(16))
         try:
             db.begin()
@@ -699,48 +682,6 @@ def move_in_percentage_allocation(r:str,body:PercentageAllocation,request:Reques
         move_in_save(r,s,body,actor,'Recorded a percentage cost share')
     return {'ok':True}
 
-def relocation_admin(request:Request):
-    expected=os.getenv('RELOCATION_ADMIN_TOKEN','')
-    token=request.headers.get('authorization','')
-    if not expected:raise HTTPException(503,'Relocation Desk is not configured')
-    if not token.startswith('Bearer ') or not secrets.compare_digest(token[7:],expected):raise HTTPException(403,'Administrator access required')
-
-@app.post('/api/relocation/policies')
-def create_relocation_policy(body:RelocationPolicy,request:Request):
-    relocation_admin(request)
-    code=secrets.token_urlsafe(32)
-    with lock:
-        db.execute('INSERT INTO relocation_policies(id,state) VALUES(?,?)',(code,body.model_dump_json()));db.commit()
-    return {'code':code,'policy':body.model_dump(mode='json')}
-
-@app.get('/api/relocation/policies/{code}/ledger')
-def relocation_ledger(code:str,request:Request):
-    relocation_admin(request)
-    with lock:
-        row=db.execute('SELECT state FROM relocation_policies WHERE id=?',(code,)).fetchone()
-        if not row:raise HTTPException(404,'Policy not found')
-        policy=json.loads(row[0]);entries=[]
-        for (raw,) in db.execute('SELECT state FROM rooms').fetchall():
-            state=json.loads(raw)
-            if state.get('relocation',{}).get('policy_id')!=code:continue
-            checkout=state.get('checkout') or {}
-            if checkout.get('status')=='paid':
-                entries.append({'room_id':state['id'],'status':'paid','total_cents':checkout['total'],'currency':checkout['currency'],'payment_reference':checkout['id']})
-        return {'policy':policy,'entries':entries,'spent_cents':sum(e['total_cents'] for e in entries if e['currency']==policy['currency'])}
-
-@app.post('/api/rooms/{r}/relocation/check')
-def check_relocation(r:str,body:PolicyCheck,request:Request):
-    with lock:
-        auth(r,request);s=load(r)
-        if body.revision!=s['revision']:raise HTTPException(409,'Room changed; refresh and retry')
-        relocation=s.get('relocation')
-        if not relocation:raise HTTPException(409,'No relocation policy is attached')
-        product=next((p for p in catalog if p['id']==body.product_id),None)
-        if not product:raise HTTPException(422,'Verified category and price are unavailable for this product')
-        policy=RelocationPolicy.model_validate(relocation['policy'])
-        checkout=s.get('checkout') or {};spent=checkout.get('total',0) if checkout.get('status')=='paid' and checkout.get('currency')==policy.currency else 0
-        return policy_eligibility(policy,product.get('category',''),product['price'],product['currency'],spent)
-
 @app.post('/api/rooms/{r}/discovery')
 def discover(r:str,body:Search,request:Request):
     auth(r,request)
@@ -783,65 +724,6 @@ def whoami(r:str,request:Request):
     with lock:
         actor=auth(r,request); s=load(r)
         return {'name':actor,'is_payer':actor==s['payer']}
-
-# Ephemeral audio signaling: membership and Origin are checked before joining.
-# Media is exchanged directly between the two browsers, not stored by ShopSide.
-signal_peers={}
-@app.websocket('/api/rooms/{r}/call')
-async def call_signal(ws:WebSocket,r:str):
-    if ws.headers.get('origin')!=WEB_ORIGIN:
-        await ws.close(code=1008); return
-    try: actor=auth(r,ws)
-    except HTTPException:
-        await ws.close(code=1008); return
-    await ws.accept()
-    peers=signal_peers.setdefault(r,{})
-    if actor in peers or len(peers)>=4:
-        await ws.close(code=1008); return
-    peers[actor]=ws
-    async def send_peer(name,payload):
-        peer=peers.get(name)
-        if peer:
-            try: await peer.send_json(payload)
-            except (RuntimeError,WebSocketDisconnect): pass
-    for name in list(peers):
-        if name!=actor:await send_peer(name,{'type':'peer_ready','peer':actor})
-    try:
-        while True:
-            data=await ws.receive_json()
-            if not isinstance(data,dict) or data.get('type') not in ('offer','answer','ice','hangup') or len(json.dumps(data))>32768:
-                await ws.close(code=1008); break
-            target=data.get('to')
-            if target is not None:
-                if not isinstance(target,str) or target==actor or target not in peers:
-                    continue
-                await send_peer(target,{'type':data['type'],'payload':data.get('payload'),'peer':actor})
-            elif len(peers)<=2:
-                # Compatibility with existing two-peer clients.
-                for name in list(peers):
-                    if name!=actor:await send_peer(name,{'type':data['type'],'payload':data.get('payload')})
-            else:
-                await ws.close(code=1008); break
-    except (WebSocketDisconnect,RuntimeError): pass
-    finally:
-        peers.pop(actor,None)
-        for name in list(peers):await send_peer(name,{'type':'peer_left','peer':actor})
-        if not peers: signal_peers.pop(r,None)
-
-@app.get('/api/rooms/{r}/call-config')
-def call_config(r:str,request:Request):
-    auth(r,request)
-    raw=os.getenv('WEBRTC_ICE_SERVERS')
-    if not raw: return {'iceServers':[{'urls':'stun:stun.l.google.com:19302'}]}
-    try:
-        servers=json.loads(raw)
-        if not isinstance(servers,list) or not servers or len(servers)>8: raise ValueError()
-        for server in servers:
-            urls=server.get('urls')
-            if not isinstance(urls,(str,list)) or not urls: raise ValueError()
-            if any(not isinstance(u,str) or not u.startswith(('stun:','stuns:','turn:','turns:')) for u in ([urls] if isinstance(urls,str) else urls)): raise ValueError()
-        return {'iceServers':servers}
-    except (TypeError,ValueError,AttributeError): raise HTTPException(503,'Voice relay configuration is invalid')
 
 class ConciergeTurn(BaseModel):
     text:str=Field(default='',max_length=2000)

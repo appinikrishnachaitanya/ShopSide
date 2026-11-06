@@ -8,7 +8,11 @@ test("desktop and mobile share persisted room", async ({ browser }) => {
   const b = await browser.newContext({ viewport: { width: 375, height: 812 } });
   const first = await a.newPage(),
     second = await b.newPage();
-  const view = (page: any, name: string) => page.getByRole("navigation", { name: "Shopping workspace" }).getByRole("button", { name: new RegExp("^" + name) }).click();
+  const view = async (page: any, name: string) => {
+    const close = page.locator("dialog[open] .workspace-dialog-header button");
+    if (await close.count()) await close.click();
+    if (name !== "Discover") await page.getByRole("button", { name: new RegExp("^" + (name === "Spotlight" ? "View selected" : name)) }).first().click();
+  };
   await first.goto(testBase);
   await first.getByLabel("Your name").fill("Krishna");
   await first.getByRole("button", { name: "Create your room" }).click();
@@ -68,6 +72,7 @@ test("desktop and mobile share persisted room", async ({ browser }) => {
   await expect(
     second.locator(".board").getByText("Quiet Hours", { exact: true }),
   ).toBeVisible();
+  await view(second, "Discover");
   await second.getByLabel("Message everyone").fill("Comfort matters to me");
   await second
     .getByRole("button", { name: "Send message", exact: true })
@@ -95,6 +100,7 @@ test("desktop and mobile share persisted room", async ({ browser }) => {
   await first.getByLabel("Product variant").selectOption("midnight");
   await first.getByLabel("Product quantity").fill("2");
   await first.getByRole("button", { name: "Add to cart" }).click();
+  await view(second, "Discover");
   await second.locator(".cart-details summary").click();
   await expect(
     second.getByText("Quiet Hours · midnight", { exact: true }),
@@ -120,7 +126,7 @@ test("desktop and mobile share persisted room", async ({ browser }) => {
   await first.getByRole("button", { name: "Update quantity" }).click();
   await expect(second.getByLabel("Quantity 2 midnight")).toHaveValue("2");
   await first
-    .getByRole("button", { name: "Review exact quote", exact: true })
+    .getByRole("button", { name: "Review sandbox checkout", exact: true })
     .click();
   await expect(first.getByText("Total $198.00 USD")).toBeVisible();
   await expect(

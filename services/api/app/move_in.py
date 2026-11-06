@@ -94,26 +94,3 @@ def allocate_percentages(total_cents:int,percentages:dict[str,int])->dict[str,in
     order=sorted(percentages,key=lambda name:(-(total_cents*percentages[name]%10000),name))
     for name in order[:remaining]:result[name]+=1
     return result
-
-class RelocationPolicy(BaseModel):
-    model_config=ConfigDict(extra='forbid')
-    name:str=Field(min_length=1,max_length=100)
-    allowance_cents:int=Field(ge=0,le=100000000,strict=True)
-    currency:Literal['USD']='USD'
-    eligible_categories:list[str]=Field(min_length=1,max_length=20)
-    approval_threshold_cents:int=Field(ge=0,le=100000000,strict=True)
-    @model_validator(mode='after')
-    def clean_categories(self):
-        if any(not x.strip() or len(x)>80 for x in self.eligible_categories):raise ValueError('Invalid category')
-        self.eligible_categories=sorted(set(x.strip().lower() for x in self.eligible_categories))
-        return self
-
-def policy_eligibility(policy:RelocationPolicy,category:str,amount_cents:int,currency:str,spent_cents:int)->dict:
-    if currency!=policy.currency:return {'eligible':False,'reason':'Currency does not match the allowance','approval_required':False}
-    if category.strip().lower() not in policy.eligible_categories:return {'eligible':False,'reason':'Category is not eligible','approval_required':False}
-    if amount_cents<0 or spent_cents+amount_cents>policy.allowance_cents:return {'eligible':False,'reason':'Allowance would be exceeded','approval_required':False}
-    return {'eligible':True,'reason':'Meets the illustrative policy','approval_required':amount_cents>policy.approval_threshold_cents}
-
-class PolicyCheck(BaseModel):
-    product_id:str=Field(min_length=1,max_length=200)
-    revision:int

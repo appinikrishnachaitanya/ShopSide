@@ -3,15 +3,14 @@ import MoveIn from "./MoveIn";
 import MemoryReceipt from "./MemoryReceipt";
 import RoomPreview from "./RoomPreview";
 import WhyPick from "./WhyPick";
-import RelocationDesk from "./RelocationDesk";
 import { useEffect, useRef, useState } from "react";
 import { sessionFetch, sessionSocket, startInviteSession } from "./lib/session";
 import DecisionBoard from "./DecisionBoard";
-import AudioCall from "./AudioCall";
 import CartQuantity from "./CartQuantity";
 import Recommendations from "./Recommendations";
 import Concierge from "./Concierge";
 import ProductDetails from "./ProductDetails";
+import WorkspaceOverlay from "./WorkspaceOverlay";
 import {
   ArrowRight,
   ArrowUpRight,
@@ -83,7 +82,6 @@ export default function Home() {
   const [paypalReady, setPaypalReady] = useState(false);
   const [initialMissionLoading, setInitialMissionLoading] = useState(false);
   const [mode, setMode] = useState("move_in");
-  const [relocationCode, setRelocationCode] = useState("");
   const [minPrice, setMinPrice] = useState("");
   const [maxPrice, setMaxPrice] = useState("");
   const [inStock, setInStock] = useState(false);
@@ -258,7 +256,7 @@ export default function Home() {
 
   async function enter() {
     try {
-      const result = await api(invite ? "join/" + invite : "rooms", { name, mode: invite ? "general" : mode, relocation_code: invite ? "" : relocationCode.trim(), initial_request: invite ? "" : shoppingRequest.trim() });
+      const result = await api(invite ? "join/" + invite : "rooms", { name, mode: invite ? "general" : mode, initial_request: invite ? "" : shoppingRequest.trim() });
       const r = result.room || result;
       if (!invite && mode === "move_in" && shoppingRequest.trim()) setInitialMissionLoading(true);
       S(r);
@@ -301,6 +299,7 @@ export default function Home() {
       ) {
         setCartOpen(true);
         const line = kind === "cart_line" ? JSON.parse(value) : null;
+        if (workspaceView === "product" && (!line || line.quantity > 0)) setWorkspaceView("discover");
         const existed =
           line &&
           room.cart?.some(
@@ -374,6 +373,7 @@ export default function Home() {
     command("focus", id);
   }
   function openCart() {
+    setWorkspaceView("discover");
     setCartOpen(true);
     requestAnimationFrame(() => document.querySelector(".cart-details")?.scrollIntoView({behavior:"smooth", block:"nearest"}));
   }
@@ -474,7 +474,7 @@ export default function Home() {
           </button>
         )}
       </header>
-      {roomAlert && <div className="room-alert" role="status"><span>{roomAlert}</span><button type="button" aria-label="Dismiss room update" onClick={() => setRoomAlert("")}>×</button></div>}
+      {roomAlert && workspaceView === "discover" && <div className="room-alert" role="status"><span>{roomAlert}</span><button type="button" aria-label="Dismiss room update" onClick={() => setRoomAlert("")}>×</button></div>}
       {notice && (
         <p role="status" className="cart-notice">
           <span>{notice}</span>
@@ -534,7 +534,6 @@ export default function Home() {
                   onChange={(e) => setShoppingRequest(e.target.value)}
                   maxLength={2000}
                 />
-                {!invite && mode === "move_in" && <details className="relocation-code"><summary>Have a relocation allocation?</summary><label>Private allocation code<input aria-label="Relocation allocation code" value={relocationCode} onChange={e=>setRelocationCode(e.target.value)} /></label></details>}
                 </>}
                 <label htmlFor="welcome-name">WHAT SHOULD WE CALL YOU?</label>
                 <div>
@@ -552,7 +551,6 @@ export default function Home() {
                   </button>
                 </div>
               </form>
-              {!invite && <RelocationDesk />}
               <div className="welcome-note">
                 <span className="mini-avatars">
                   <b>K</b>
@@ -610,10 +608,16 @@ export default function Home() {
                 <div className="workspace-bar-title"><span className="workspace-orb"><Sparkles size={17}/></span><div><div className="workspace-name"><strong>{room.title}</strong><button className="edit-title" disabled={!online} onClick={()=>{const title=prompt("Room title",room.title);if(title)command("title",title);}}>Edit</button></div><small>{me?.name && <><span aria-label="Your room identity">You’re {me.name}</span> · </>}{room.people.length} {room.people.length === 1 ? "person" : "people"} · {online ? "Live" : "Reconnecting"}{room.move_in?.mission?.budget_cents != null ? ` · ${room.move_in.mission.currency} ${(room.move_in.mission.budget_cents/100).toFixed(2)} budget` : ""}</small></div></div>
                 <button className="workspace-cart" onClick={openCart}><ShoppingBag size={16}/> Basket <span>{(room.cart || []).reduce((sum:number,item:any)=>sum+item.quantity,0)+(room.external_cart?.length || 0)}</span></button>
               </div>
-              <nav className="workspace-tabs" aria-label="Shopping workspace">
-                {([['discover','Discover'],['product','Spotlight'],['plan','Plan'],['room','3D room'],['together','Compare']] as const).map(([key,label])=><button key={key} type="button" aria-pressed={workspaceView===key} onClick={()=>setWorkspaceView(key)}>{label}{key==='discover' && !!room.discovery?.length && <span>{room.discovery.length}</span>}{key==='together' && !!room.shortlist?.length && <span>{room.shortlist.length}</span>}</button>)}
-              </nav>
-              <div className="workspace-panel" hidden={workspaceView!=="discover"} aria-label="Discover products">
+              <div className="workspace-summary" aria-label="Your shared workspace">
+                <div><strong>Our plan</strong><span>{room.move_in?.mission?.budget_cents != null ? `${room.move_in.mission.currency} ${(room.move_in.mission.budget_cents / 100).toFixed(2)} budget` : "Budget not set"} · {room.shortlist.length} saved</span></div>
+                <div className="workspace-summary-actions">
+                  <button type="button" onClick={()=>setWorkspaceView("plan")}>View plan</button>
+                  {room.mode === "move_in" && <button type="button" onClick={()=>setWorkspaceView("room")}>Open our room</button>}
+                  <button type="button" onClick={()=>setWorkspaceView("together")}>Compare {room.shortlist.length > 0 && `(${room.shortlist.length})`}</button>
+                  {p && <button type="button" onClick={()=>setWorkspaceView("product")}>View selected</button>}
+                </div>
+              </div>
+              <div className="workspace-panel" aria-label="Discover products">
               <div className="discovery">
                 <div className="section-heading">
                   <div>
@@ -698,7 +702,7 @@ export default function Home() {
                                 rel="noopener noreferrer"
                               >
                                 {o.retailer} · {o.currency}{" "}
-                                {(o.price_cents / 100).toFixed(2)} ↗
+                                {o.price_cents == null ? "Price unavailable" : (o.price_cents / 100).toFixed(2)} ↗
                               </a>
                               <small>
                                 {" "}
@@ -783,8 +787,9 @@ export default function Home() {
               </div>
               </details>
               </div>
+              <WorkspaceOverlay open={workspaceView!=="discover"} title={workspaceView === "product" ? "Product details" : workspaceView === "plan" ? "Our plan" : workspaceView === "room" ? "Our room" : "Compare together"} drawer={workspaceView === "plan"} onClose={()=>setWorkspaceView("discover")}>
+              {roomAlert && workspaceView !== "discover" && <div className="room-alert" role="status"><span>{roomAlert}</span><button type="button" aria-label="Dismiss room update" onClick={() => setRoomAlert("")}>×</button></div>}
               <div className="workspace-panel spotlight-panel" hidden={workspaceView!=="product"} aria-label="Product spotlight">
-              <button className="workspace-back" onClick={()=>setWorkspaceView("discover")}>← Back to results</button>
               {room.agreed_product && (
                 <div role="status" className="agreement-banner">
                   ✓ We chose{" "}
@@ -1024,6 +1029,7 @@ export default function Home() {
               />
               <DecisionBoard room={room} products={all} command={command} />
               </div>
+              </WorkspaceOverlay>
             </section>
             <aside id="chat" className="conversation">
               <div className="conversation-top">
@@ -1041,7 +1047,6 @@ export default function Home() {
               <p className="conversation-subtitle">
                 Good decisions are better together.
               </p>
-              <AudioCall roomId={room.id} online={online} />
               <div className="conversation-label">
                 <span>THE ROOM CHAT</span>
                 <span>{room.people.length} PEOPLE · <button type="button" className="sound-toggle" aria-pressed={soundEnabled} onClick={toggleSound}>{soundEnabled ? "Sound on" : "Enable sound"}</button></span>
@@ -1218,6 +1223,7 @@ export default function Home() {
                       Nothing in your cart yet. Find something you both love.
                     </p>
                   )}
+                  {!!room.cart?.length && <><h3>ShopSide sandbox items</h3><p>Fictional products · no goods shipped. PayPal Sandbox checkout.</p></>}
                   {room.cart?.map((item: any) => (
                     <div
                       className="cart-line"
@@ -1227,6 +1233,7 @@ export default function Home() {
                         {catalog.find((p) => p.id === item.product)?.name} ·{" "}
                         {item.variant}
                       </p>
+                      <p>{(() => { const product = catalog.find((p) => p.id === item.product); return product ? `$${(product.price / 100).toFixed(2)} each · $${((product.price * item.quantity) / 100).toFixed(2)}` : "Price unavailable"; })()}</p>
                       <CartQuantity
                         item={item}
                         disabled={!online || !!room.checkout}
@@ -1263,7 +1270,7 @@ export default function Home() {
                                 rel="noopener noreferrer"
                               >
                                 {offer.retailer} · {offer.currency}{" "}
-                                {(offer.price_cents / 100).toFixed(2)} · Visit
+                                {offer.price_cents == null ? "Price unavailable" : (offer.price_cents / 100).toFixed(2)} · Visit
                                 retailer ↗
                               </a>
                             </p>
@@ -1299,7 +1306,7 @@ export default function Home() {
                     onClick={checkout}
                   >
                     {me?.is_payer
-                      ? "Review exact quote"
+                      ? "Review sandbox checkout"
                       : room.payer + " handles checkout"}
                   </button>
                   {quote && (
@@ -1335,7 +1342,7 @@ export default function Home() {
                   {room.checkout && (
                     <p role="status">
                       {room.checkout.status === "paid"
-                        ? "You chose this together. Payment verified."
+                        ? "PayPal sandbox payment verified."
                         : "Checkout: " + room.checkout.status}
                     </p>
                   )}

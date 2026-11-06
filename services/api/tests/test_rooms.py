@@ -168,21 +168,6 @@ def test_express_mode_ignores_ambient_project(monkeypatch):
     monkeypatch.setattr(config.genai,'Client',lambda **kwargs:kwargs)
     assert config.configured_client()=={'vertexai':True,'api_key':'test-express-key'}
 
-def test_voice_signaling_only_between_authorized_room_members():
-    from starlette.websockets import WebSocketDisconnect
-    a,b,c=TestClient(app),TestClient(app),TestClient(app)
-    result=a.post('/api/rooms',json={'name':'A'}).json();r=result['room']['id'];b.post('/api/join/'+result['invite'],json={'name':'B'})
-    import pytest
-    with pytest.raises(WebSocketDisconnect):
-        with c.websocket_connect('/api/rooms/'+r+'/call',headers={'origin':'http://localhost:3000'}):pass
-    with a.websocket_connect('/api/rooms/'+r+'/call',headers={'origin':'http://localhost:3000'}) as first:
-        with b.websocket_connect('/api/rooms/'+r+'/call',headers={'origin':'http://localhost:3000'}) as second:
-            assert first.receive_json()['type']=='peer_ready'
-            first.send_json({'type':'offer','payload':{'sdp':'test'}})
-            assert second.receive_json()=={'type':'offer','payload':{'sdp':'test'}}
-            second.send_json({'type':'answer','payload':{'sdp':'reply'}})
-            assert first.receive_json()=={'type':'answer','payload':{'sdp':'reply'}}
-
 def test_quote_rolls_back_stock_and_payment_when_save_fails(monkeypatch):
     import app.main as main
     a=TestClient(app,raise_server_exceptions=False)
@@ -243,23 +228,6 @@ def test_retailer_cart_survives_new_search_and_sample_quote_excludes_it(monkeypa
     assert quote['total']==8900
     assert len(quote['items'])==1 and quote['items'][0]['product']=='0'
 
-def test_family_voice_signaling_targets_only_intended_member():
-    from contextlib import ExitStack
-    members=[TestClient(app) for _ in range(4)]
-    created=members[0].post('/api/rooms',json={'name':'A'}).json();r=created['room']['id']
-    for index,name in enumerate(['B','C','D'],1):assert members[index].post('/api/join/'+created['invite'],json={'name':name}).status_code==200
-    with ExitStack() as stack:
-        sockets=[]
-        for client in members:
-            sockets.append(stack.enter_context(client.websocket_connect('/api/rooms/'+r+'/call',headers={'origin':'http://localhost:3000'})))
-        assert [sockets[0].receive_json()['peer'] for _ in range(3)]==['B','C','D']
-        assert [sockets[1].receive_json()['peer'] for _ in range(2)]==['C','D']
-        assert sockets[2].receive_json()['peer']=='D'
-        sockets[0].send_json({'type':'offer','to':'D','payload':{'sdp':'private'}})
-        assert sockets[3].receive_json()=={'type':'offer','payload':{'sdp':'private'},'peer':'A'}
-        sockets[3].send_json({'type':'answer','to':'A','payload':{'sdp':'reply'}})
-        assert sockets[0].receive_json()=={'type':'answer','payload':{'sdp':'reply'},'peer':'D'}
-
 def test_tab_scoped_memberships_survive_shared_browser_cookies():
     client=TestClient(app)
     first='a'*32;second='b'*32
@@ -292,14 +260,3 @@ def test_duplicate_names_ignore_case_and_whitespace():
     created=a.post('/api/rooms',json={'name':'  Alice  '}).json()
     assert created['room']['people']==['Alice']
     assert b.post('/api/join/'+created['invite'],json={'name':' ALICE '}).status_code==409
-
-def test_tab_scoped_voice_signaling_uses_each_membership():
-    client=TestClient(app);one={'X-ShopSide-Session':'a'*32};two={'X-ShopSide-Session':'b'*32}
-    created=client.post('/api/rooms',json={'name':'A'},headers=one).json();r=created['room']['id']
-    assert client.post('/api/join/'+created['invite'],json={'name':'B'},headers=two).status_code==200
-    origin={'origin':'http://localhost:3000'}
-    with client.websocket_connect('/api/rooms/'+r+'/call?session='+('a'*32),headers=origin) as a:
-        with client.websocket_connect('/api/rooms/'+r+'/call?session='+('b'*32),headers=origin) as b:
-            assert a.receive_json()=={'type':'peer_ready','peer':'B'}
-            a.send_json({'type':'offer','to':'B','payload':{'sdp':'test'}})
-            assert b.receive_json()=={'type':'offer','payload':{'sdp':'test'},'peer':'A'}

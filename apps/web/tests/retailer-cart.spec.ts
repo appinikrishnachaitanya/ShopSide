@@ -47,7 +47,7 @@ test("live retailer item is visible in both carts and cannot enter sandbox check
       .getByText(productName, { exact: true }),
   ).toBeVisible();
   await expect(
-    first.getByRole("button", { name: "Review exact quote" }),
+    first.getByRole("button", { name: "Review sandbox checkout" }),
   ).toBeDisabled();
   await first.reload();
   await first.locator(".cart-details summary").click();
