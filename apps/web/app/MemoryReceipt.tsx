@@ -1,0 +1,19 @@
+"use client";
+import { sessionFetch } from "./lib/session";
+import { useEffect, useState } from "react";
+import { Heart, LockKeyhole, Sparkles } from "lucide-react";
+const labels:Record<string,string>={love:"❤️ Love it",price:"💸 Too pricey",size:"📏 Check the size",discuss:"🤔 Let’s discuss"};
+export default function MemoryReceipt({room,online}:{room:any;online:boolean}) {
+  const [status,setStatus]=useState<any>(null),[error,setError]=useState(""),[working,setWorking]=useState<string|null>(null);
+  const hasItems=!!Object.keys(room.move_in?.items || {}).length || !!Object.keys(room.memory_receipts || {}).length;
+  useEffect(()=>{if(!hasItems){setStatus(null);return;}let active=true;sessionFetch(`/api/rooms/${room.id}/memory-receipts/status`).then(async response=>{if(!response.ok)throw Error('Memory status unavailable');return response.json();}).then(data=>{if(active)setStatus(data);}).catch(()=>{if(active)setError('Could not load memory status.');});return()=>{active=false;};},[room.id,room.revision,hasItems]);
+  const items=Object.values(room.move_in?.items || {}) as any[];
+  if(!items.length && !status?.receipts?.length)return null;
+  async function create(productId:string){setError('');setWorking(productId);try{const response=await sessionFetch(`/api/rooms/${room.id}/memory-receipts`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({product_id:productId})});const data=await response.json();if(!response.ok)throw Error(data.detail || 'Could not create your memory');}catch(e:any){setError(e.message);}finally{setWorking(null);}}
+  return <section className="memory-section" aria-label="Shared memory receipts"><div className="memory-section-header"><span className="memory-spark"><Sparkles size={18}/></span><div><span className="section-kicker">THE MOMENTS THAT MATTER</span><h2>Your shared memories<span className="period">.</span></h2></div></div>
+    {status?.receipts?.map((receipt:any)=><article className="memory-card" key={receipt.product_id}><div className="memory-card-top"><span>SHOPSIDE · SHARED MEMORY</span><Heart size={17} /></div><span className="memory-kicker">A CHOICE YOU MADE TOGETHER</span><h3>{receipt.product_name}</h3><p className="memory-quote">“{receipt.line}”</p><div className="memory-members">{receipt.members.map((member:any)=><div key={member.name}><strong>{member.name}</strong><span>{member.reaction ? labels[member.reaction] || 'Reaction recorded' : 'No reaction recorded'}</span></div>)}</div><div className="memory-footer"><div><small>COMMITTED TOGETHER</small><time dateTime={receipt.committed_at}>{new Date(receipt.committed_at).toLocaleString()}<br/><span>{receipt.committed_at} UTC</span></time></div><div><small>PAYMENT</small><strong>{receipt.payments_verified} verified sandbox payments</strong></div></div><p className="memory-disclaimer">AI-written memory · Sandbox merchant · No goods shipped</p></article>)}
+    {items.filter(item=>status?.ready?.includes(item.product_id) && !status.receipts.some((r:any)=>r.product_id===item.product_id)).map(item=><div className="memory-pending" key={item.product_id}><Sparkles size={16}/><span>Your shared memory for <strong>{item.name}</strong> is ready.</span><button disabled={!online || !!working} onClick={()=>create(item.product_id)}>{working===item.product_id?'Creating…':'Create memory'}</button></div>)}
+    {status && !status.receipts.length && !status.ready.length && <div className="memory-pending"><LockKeyhole size={17}/><span>{room.people.length > 2 ? "Dual memories are currently limited to two-person rooms." : "A memory needs two recorded approvals and two separately verified sandbox payments for the same product. Current checkout supports one payer, so this receipt can’t be created yet."}</span></div>}
+    {error && <p role="alert" className="concierge-error">{error}</p>}
+  </section>;
+}

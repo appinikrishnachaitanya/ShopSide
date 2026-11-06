@@ -1,0 +1,22 @@
+services:
+  api:
+    build:
+      context: services
+      dockerfile: api/Dockerfile
+    env_file: .env
+    environment:
+      SHOPSIDE_DB: /data/shopside.sqlite3
+    volumes:
+      - room-data:/data
+    ports:
+      - "8000:8000"
+  web:
+    build: apps/web
+    environment:
+      API_INTERNAL_URL: http://api:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+volumes:
+  room-data:

@@ -1,0 +1,10 @@
+.env
+**/.env
+**/.env.*
+**/__pycache__/
+**/.pytest_cache/
+**/*.sqlite3
+**/*.db
+**/.venv/
+**/node_modules/
+**/tests/

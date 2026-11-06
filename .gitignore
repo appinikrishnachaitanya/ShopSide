@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ShopSide generated files
+node_modules/
+.next/
+*.tsbuildinfo
+playwright-report/
+test-results/
