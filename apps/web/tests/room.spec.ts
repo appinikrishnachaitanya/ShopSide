@@ -1,0 +1,28 @@
+import {test,expect} from '@playwright/test';
+test('desktop and mobile share persisted room',async({browser})=>{
+ const a=await browser.newContext({permissions:['clipboard-read','clipboard-write']});
+ const b=await browser.newContext({viewport:{width:375,height:812}});
+ const first=await a.newPage(),second=await b.newPage();
+ await first.goto('http://localhost:3000');
+ await first.getByLabel('Your name').fill('Krishna');
+ await first.getByRole('button',{name:'Start a shopping room'}).click();
+ await expect(first.getByText('● Connected')).toBeVisible();
+ const roomId=new URL(first.url()).searchParams.get('room');
+ const state=await (await first.request.get('http://localhost:3000/api/rooms/'+roomId)).json();
+ await second.goto('http://localhost:3000?invite='+state.invite);
+ await second.getByLabel('Your name').fill('Priya');
+ await second.getByRole('button',{name:'Join your friend'}).click();
+ await expect(second.getByText('● Connected')).toBeVisible();
+ await expect(first.getByText(/Krishna & Priya/)).toBeVisible();
+ await first.getByRole('button',{name:/Quiet Hours.*Look at this/}).click();
+ await expect(second.locator('.stage h2')).toHaveText('Quiet Hours');
+ await second.getByRole('button',{name:/Like ·/}).click();
+ await expect(first.getByRole('button',{name:/Like · Priya/})).toBeVisible();
+ await first.reload();await second.reload();
+ await expect(first.locator('.stage h2')).toHaveText('Quiet Hours');
+ await expect(second.getByRole('button',{name:/Like · Priya/})).toBeVisible();
+ expect(await second.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();
+ await first.screenshot({path:'/tmp/shopside-desktop.png',fullPage:true});
+ await second.screenshot({path:'/tmp/shopside-mobile.png',fullPage:true});
+ await a.close();await b.close();
+});
