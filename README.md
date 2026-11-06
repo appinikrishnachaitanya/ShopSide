@@ -49,3 +49,5 @@ Detailed credential and networking instructions: [environment configuration](doc
 Voice is an opt-in, two-person browser audio call. Both room members must select **Join voice** and grant microphone access. Calls use WebRTC and are not sent to the shopping agent. STUN alone may fail on restrictive networks; configure a TURN relay using `WEBRTC_ICE_SERVERS` for broader connectivity. The current cloud browser could not gather ICE candidates, so end-to-end audio remains unverified here. See [Railway deployment](docs/RAILWAY.md) for service settings, persistent storage, and current limitations.
 
 The shared priorities panel updates from room messages mentioning products by name, shortlist, reactions, confirmed preferences and budget. Ask ShopSide explicitly for model-generated recommendations based on the room conversation.
+
+For GCP deployment, runtime backend routing, PostgreSQL 17.11/Cloud SQL setup and SQLite import, see [Cloud Run and Cloud SQL](docs/CLOUD-RUN.md).

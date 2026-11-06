@@ -1,8 +1,8 @@
-import json, os, secrets, sqlite3, threading, asyncio, time
+import json, os, secrets, threading, asyncio, time
 from fastapi import WebSocket, WebSocketDisconnect
 from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, event
+from .database import Database, make_engine
 from .discovery import Search, search_products, product_details
 from .ai_config import configured_client
 
@@ -24,11 +24,8 @@ subscribers={}
 def notify(r):
     for loop,event in list(subscribers.get(r,set())):
         if not loop.is_closed(): loop.call_soon_threadsafe(event.set)
-engine=create_engine('sqlite:///'+os.getenv('SHOPSIDE_DB','/tmp/shopside.sqlite3'),connect_args={'check_same_thread':False,'timeout':5})
-_connection=engine.raw_connection()
-db=_connection.driver_connection
-db.execute('PRAGMA journal_mode=WAL')
-db.execute('PRAGMA busy_timeout=5000')
+engine=make_engine()
+db=Database(engine)
 db.execute('CREATE TABLE IF NOT EXISTS rooms(id TEXT PRIMARY KEY, invite TEXT UNIQUE, state TEXT)')
 db.execute('CREATE TABLE IF NOT EXISTS members(token TEXT PRIMARY KEY, room TEXT, name TEXT)')
 catalog = [dict(id=str(i), name=n, price=p, currency='USD', description='Fictional sample headphones · ShopSide collection') for i,(n,p) in enumerate([('Sunday Studio',8900),('Everyday Air',6900),('Quiet Hours',9900),('City Rhythm',7900),('Soft Signal',5900),('Open Road',9500),('Little Escape',4900),('Evening Edit',8500)])]
@@ -37,7 +34,7 @@ for product in catalog:
 db.execute('CREATE TABLE IF NOT EXISTS inventory(product TEXT, variant TEXT, stock INTEGER NOT NULL, PRIMARY KEY(product,variant))')
 for product in catalog:
     product['variants']=['standard','midnight']
-    for variant in product['variants']: db.execute('INSERT OR IGNORE INTO inventory VALUES(?,?,?)',(product['id'],variant,20))
+    for variant in product['variants']: db.execute('INSERT INTO inventory VALUES(?,?,?) ON CONFLICT(product,variant) DO NOTHING',(product['id'],variant,20))
 db.commit()
 def stock(product,variant):
     row=db.execute('SELECT stock FROM inventory WHERE product=? AND variant=?',(product,variant)).fetchone()
@@ -58,8 +55,9 @@ def load(r):
     row=db.execute('SELECT state FROM rooms WHERE id=?',(r,)).fetchone()
     if not row: raise HTTPException(404,'Room not found')
     return json.loads(row[0])
-def save(r,s):
-    db.execute('UPDATE rooms SET state=? WHERE id=?',(json.dumps(s),r)); db.commit(); notify(r)
+def save(r,s,commit=True):
+    db.execute('UPDATE rooms SET state=? WHERE id=?',(json.dumps(s),r))
+    if commit: db.commit(); notify(r)
 def auth(r,request):
     row=db.execute('SELECT name FROM members WHERE room=? AND token=?',(r,request.cookies.get('membership',''))).fetchone()
     if not row: raise HTTPException(403,'Membership required')
@@ -295,6 +293,7 @@ async def agent(r:str,body:Ask,request:Request):
 import httpx
 PAYPAL='https://api-m.sandbox.paypal.com'
 db.execute('CREATE TABLE IF NOT EXISTS payments(id TEXT PRIMARY KEY, room TEXT, state TEXT)')
+db.commit()
 payment_busy=set()
 async def paypal(method,path,payload=None,operation=None):
     if os.getenv('PAYPAL_ENV','sandbox')!='sandbox': raise HTTPException(503,'Only sandbox is supported')
@@ -305,9 +304,10 @@ async def paypal(method,path,payload=None,operation=None):
         headers={'Authorization':'Bearer '+token.json()['access_token']}
         if operation: headers['PayPal-Request-Id']=operation
         result=await client.request(method,PAYPAL+path,json=payload,headers=headers); result.raise_for_status(); return result.json()
-def payment_save(p):
+def payment_save(p,commit=True):
     with lock:
-        db.execute('INSERT OR REPLACE INTO payments VALUES(?,?,?)',(p['id'],p['room'],json.dumps(p))); db.commit()
+        db.execute('INSERT INTO payments VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET room=excluded.room,state=excluded.state',(p['id'],p['room'],json.dumps(p)))
+        if commit: db.commit()
 def payment_load(id,r):
     row=db.execute('SELECT state FROM payments WHERE id=? AND room=?',(id,r)).fetchone()
     if not row: raise HTTPException(404,'Payment not found')
@@ -332,8 +332,16 @@ def quote(r:str,request:Request):
             items.append(dict(**item,price=product['price'],name=product['name'],offer_id='demo:'+item['product']+':'+item['variant']))
         total=sum(i['price']*i['quantity'] for i in items)
         p=dict(revision=s['revision'],fees=0,id=secrets.token_urlsafe(20),room=r,items=items,total=total,currency='USD',expires=time.time()+600,status='quoted',create_id=secrets.token_hex(16),capture_id=secrets.token_hex(16))
-        for item in items: db.execute('UPDATE inventory SET stock=stock-? WHERE product=? AND variant=?',(item['quantity'],item['product'],item['variant']))
-        payment_save(p); s['checkout']={'id':p['id'],'status':'quoted','total':total,'currency':'USD'}; s['revision']+=1; save(r,s)
+        try:
+            db.begin()
+            for item in items:
+                cursor=db.execute('UPDATE inventory SET stock=stock-? WHERE product=? AND variant=? AND stock>=?',(item['quantity'],item['product'],item['variant'],item['quantity']))
+                if cursor.rowcount!=1: raise HTTPException(409,'Out of stock')
+            payment_save(p,commit=False)
+            s['checkout']={'id':p['id'],'status':'quoted','total':total,'currency':'USD'}; s['revision']+=1
+            save(r,s,commit=False); db.commit(); notify(r)
+        except Exception:
+            db.rollback(); raise
         return p
 @app.post('/api/rooms/{r}/payments/{id}/{action}')
 async def payment(r:str,id:str,action:str,request:Request):
@@ -345,8 +353,14 @@ async def payment(r:str,id:str,action:str,request:Request):
         if p['status']=='paid': return {'status':'paid','capture':p.get('capture')}
         if action=='cancel':
             if p['status']!='quoted': raise HTTPException(409,'Reconcile payment before cancellation')
-            for item in p['items']: db.execute('UPDATE inventory SET stock=stock+? WHERE product=? AND variant=?',(item['quantity'],item['product'],item['variant']))
-            p['status']='cancelled'; payment_save(p); s['checkout']=None; s['revision']+=1; save(r,s); return {'status':'cancelled'}
+            try:
+                db.begin()
+                for item in p['items']: db.execute('UPDATE inventory SET stock=stock+? WHERE product=? AND variant=?',(item['quantity'],item['product'],item['variant']))
+                p['status']='cancelled'; payment_save(p,commit=False)
+                s['checkout']=None; s['revision']+=1; save(r,s,commit=False); db.commit(); notify(r)
+            except Exception:
+                db.rollback(); raise
+            return {'status':'cancelled'}
         if action=='create' and time.time()>p['expires']: raise HTTPException(409,'Quote expired; cancel and request a new quote')
         payment_busy.add(id)
     try:

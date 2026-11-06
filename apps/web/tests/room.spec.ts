@@ -1,20 +1,21 @@
 import { test, expect } from "@playwright/test";
 test("desktop and mobile share persisted room", async ({ browser }) => {
+  const testBase = process.env.SHOPSIDE_TEST_URL || "http://localhost:3000";
   const a = await browser.newContext({
     permissions: ["clipboard-read", "clipboard-write"],
   });
   const b = await browser.newContext({ viewport: { width: 375, height: 812 } });
   const first = await a.newPage(),
     second = await b.newPage();
-  await first.goto("http://localhost:3000");
+  await first.goto(testBase);
   await first.getByLabel("Your name").fill("Krishna");
   await first.getByRole("button", { name: "Create your room" }).click();
   await expect(first.getByText("Connected", { exact: true })).toBeVisible();
   const roomId = new URL(first.url()).searchParams.get("room");
   const state = await (
-    await first.request.get("http://localhost:3000/api/rooms/" + roomId)
+    await first.request.get(testBase + "/api/rooms/" + roomId)
   ).json();
-  await second.goto("http://localhost:3000?invite=" + state.invite);
+  await second.goto(testBase + "?invite=" + state.invite);
   await second.getByLabel("Your name").fill("Priya");
   await second.getByRole("button", { name: "Join your friend" }).click();
   await expect(second.getByText("Connected", { exact: true })).toBeVisible();

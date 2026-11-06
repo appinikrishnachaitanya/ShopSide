@@ -35,6 +35,8 @@ opentelemetry-sdk==1.44.0
 opentelemetry-semantic-conventions==0.65b0
 packaging==26.3
 pluggy==1.7.0
+psycopg==3.3.3
+psycopg-binary==3.3.3
 pyasn1==0.6.5
 pyasn1_modules==0.4.2
 pycparser==3.12

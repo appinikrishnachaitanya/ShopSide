@@ -1,5 +1,11 @@
 import os, tempfile
 os.environ['SHOPSIDE_DB']=tempfile.mktemp()
+# Never run destructive integration tests against an ambient deployment database.
+# PostgreSQL tests require an explicit, disposable test database URL.
+if os.getenv('SHOPSIDE_TEST_DATABASE_URL'):
+    os.environ['DATABASE_URL']=os.environ['SHOPSIDE_TEST_DATABASE_URL']
+else:
+    os.environ.pop('DATABASE_URL',None)
 from fastapi.testclient import TestClient
 from app.main import app
 
@@ -183,3 +189,27 @@ def test_voice_signaling_only_between_authorized_room_members():
             assert second.receive_json()=={'type':'offer','payload':{'sdp':'test'}}
             second.send_json({'type':'answer','payload':{'sdp':'reply'}})
             assert first.receive_json()=={'type':'answer','payload':{'sdp':'reply'}}
+
+def test_quote_rolls_back_stock_and_payment_when_save_fails(monkeypatch):
+    import app.main as main
+    a=TestClient(app,raise_server_exceptions=False)
+    r=a.post('/api/rooms',json={'name':'Payer'}).json()['room']['id'];base='/api/rooms/'+r
+    assert a.post(base+'/commands',json={'command_id':'cart','revision':0,'kind':'cart','value':'4'}).status_code==200
+    before=main.stock('4','standard')
+    def fail(*args,**kwargs): raise RuntimeError('simulated storage failure')
+    monkeypatch.setattr(main,'payment_save',fail)
+    assert a.post(base+'/quote').status_code==500
+    assert main.stock('4','standard')==before
+    assert a.get(base).json()['checkout'] is None
+
+def test_postgres_connection_recovers_after_server_disconnect():
+    import pytest
+    import psycopg
+    import app.main as main
+    if not main.db.postgres:
+        pytest.skip('PostgreSQL-only disconnect recovery')
+    pid=main.db.execute('SELECT pg_backend_pid()').fetchone()[0]
+    with psycopg.connect(os.environ['SHOPSIDE_TEST_DATABASE_URL'],autocommit=True) as connection:
+        assert connection.execute('SELECT pg_terminate_backend(%s)',(pid,)).fetchone()[0]
+    with pytest.raises(psycopg.Error): main.db.execute('SELECT 1')
+    assert main.db.execute('SELECT 1').fetchone()[0]==1
