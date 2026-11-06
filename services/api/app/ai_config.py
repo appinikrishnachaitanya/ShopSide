@@ -5,10 +5,10 @@ from fastapi import HTTPException
 
 def configured_client():
     provider=os.getenv('AI_PROVIDER','vertex')
-    if provider=='vertex':
+    if provider in ['vertex','vertex-express']:
         project=os.getenv('GOOGLE_CLOUD_PROJECT')
         location=os.getenv('GOOGLE_CLOUD_LOCATION','global')
-        if project:
+        if project and provider!='vertex-express':
             # Standard Vertex AI uses Application Default Credentials, never API-key substitution.
             return genai.Client(vertexai=True,project=project,location=location)
         key=os.getenv('VERTEX_API_KEY') or os.getenv('GEMINI_API_KEY')
@@ -20,4 +20,4 @@ def configured_client():
         key=os.getenv('GEMINI_API_KEY')
         if not key:raise HTTPException(503,'Configure Gemini Developer API key')
         return genai.Client(api_key=key)
-    raise HTTPException(503,'AI_PROVIDER must be vertex or developer')
+    raise HTTPException(503,'AI_PROVIDER must be vertex, vertex-express or developer')

@@ -158,3 +158,13 @@ def test_vertex_auth_modes_do_not_mix_api_key_and_adc(monkeypatch):
     monkeypatch.delenv('GOOGLE_CLOUD_PROJECT')
     monkeypatch.delenv('VERTEX_API_KEY',raising=False)
     assert config.configured_client()=={'vertexai':True,'api_key':'test-key'}
+
+
+def test_express_mode_ignores_ambient_project(monkeypatch):
+    import app.ai_config as config
+    monkeypatch.setenv('AI_PROVIDER','vertex-express')
+    monkeypatch.setenv('GOOGLE_CLOUD_PROJECT','ambient-project')
+    monkeypatch.setenv('GEMINI_API_KEY','test-express-key')
+    monkeypatch.delenv('VERTEX_API_KEY',raising=False)
+    monkeypatch.setattr(config.genai,'Client',lambda **kwargs:kwargs)
+    assert config.configured_client()=={'vertexai':True,'api_key':'test-express-key'}
