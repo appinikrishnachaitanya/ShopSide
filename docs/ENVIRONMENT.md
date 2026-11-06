@@ -31,3 +31,7 @@ Vertex express mode omits GOOGLE_CLOUD_PROJECT and uses VERTEX_API_KEY or GEMINI
 The Gemini Developer API is available only with AI_PROVIDER=developer. A prior Developer API 403 does not establish that a Vertex key is invalid.
 
 Confirmed user mode: Vertex AI express. Use AI_PROVIDER=vertex-express; this explicitly ignores ambient project variables and uses the configured API key. Update the existing GEMINI_API_KEY destination list to include aiplatform.googleapis.com, then save/publish. No project ID, ADC service account or replacement API key is required for this mode. Current-runtime metadata still showed Developer API-only key injection at verification, so live Vertex inference was not attempted through a blocked destination.
+
+## Illustrative Relocation Desk
+
+Set a long, random `RELOCATION_ADMIN_TOKEN` only on the backend using Secret Manager. The desk is unavailable when it is unset. The administrator enters the token in the desk UI; it is held in page memory and sent to the backend over the frontend proxy. Allocation codes are reusable bearer capabilities: share them privately. This shared-token MVP is not a substitute for per-employer identity, tenant isolation, approval workflows or audit-grade access controls. The ledger returns verified sandbox purchase summaries only and excludes private room conversations and calls.

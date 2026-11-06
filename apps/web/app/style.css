@@ -1748,3 +1748,205 @@ a {
   text-decoration: underline;
   margin: 0 14px;
 }
+.concierge-panel {
+  background: #141914;
+  border: 1px solid #34412e;
+  border-radius: 16px;
+  padding: 22px;
+  margin-bottom: 30px;
+}
+.concierge-heading {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.concierge-icon {
+  display: grid;
+  place-items: center;
+  background: #2b3b23;
+  color: #c5f874;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+}
+.concierge-heading h2 {
+  font-size: 20px;
+  letter-spacing: -0.5px;
+  margin: 6px 0;
+}
+.concierge-panel > p {
+  color: #9aa798;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.concierge-panel form {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+.concierge-panel input {
+  min-width: 0;
+  flex: 1;
+  background: #20271e;
+  color: #f1f4ed;
+  border: 1px solid #3b4836;
+  border-radius: 9px;
+  padding: 13px;
+}
+.concierge-panel form button {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  background: #c5f874;
+  color: #17210e;
+  border-radius: 9px;
+  padding: 10px 15px;
+  font-weight: 700;
+}
+.concierge-history {
+  display: grid;
+  gap: 6px;
+  max-height: 150px;
+  overflow: auto;
+}
+.concierge-history div {
+  display: flex;
+  gap: 10px;
+  color: #bbc8b6;
+  font-size: 11px;
+}
+.concierge-history strong {
+  color: #d8eccd;
+}
+.intent-summary,
+.concierge-chips,
+.concierge-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 12px 0;
+}
+.intent-summary span,
+.concierge-chips button,
+.concierge-actions button {
+  padding: 7px 10px;
+  background: #263221;
+  color: #d7ebca;
+  border: 1px solid #40533a;
+  border-radius: 20px;
+  font-size: 11px;
+}
+.concierge-question {
+  margin: 14px 0;
+}
+.concierge-question p,
+.concierge-actions small {
+  color: #9ba995;
+  font-size: 11px;
+}
+.concierge-error {
+  color: #ffb4a8 !important;
+}
+.agreement-button {
+  margin-top: 12px;
+  background: transparent;
+  color: #c8e5b9;
+  border: 1px solid #52664a;
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 10px;
+}
+.agreement-success {
+  color: #c5f874;
+  font-size: 11px;
+}
+.welcome-form > div {
+  flex-wrap: wrap;
+}
+.welcome-form label[for="welcome-shopping"] {
+  width: 100%;
+}
+.welcome-form #welcome-shopping {
+  width: 100%;
+  max-width: 440px;
+}
+.concierge-invite {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: #25321f;
+  border: 1px solid #40583a;
+  padding: 14px;
+  border-radius: 10px;
+  margin: 14px 0;
+  font-size: 12px;
+}
+.concierge-invite button {
+  background: #c5f874;
+  color: #17210e;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-weight: 700;
+}
+.concierge-panel input:focus-visible {
+  outline: 2px solid #c5f874;
+  outline-offset: 2px;
+}
+.provider-details {
+  margin: 10px 0;
+  padding: 18px;
+  background: #141914;
+  border: 1px solid #34412e;
+  border-radius: 12px;
+}
+.provider-details-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+.provider-details p,
+.provider-details li,
+.provider-details small {
+  font-size: 11px;
+  line-height: 1.65;
+  color: #aab9a6;
+}
+.provider-details a {
+  color: #c5f874;
+}
+.provider-details label {
+  display: inline-grid;
+  gap: 6px;
+  margin: 8px 10px 8px 0;
+  color: #b9c9b2;
+  font-size: 11px;
+}
+.provider-details select,
+.provider-details button {
+  background: #273225;
+  color: #dcead5;
+  border: 1px solid #40533a;
+  padding: 9px;
+  border-radius: 8px;
+}
+.provider-details h3 {
+  font-size: 13px;
+}
+.agreement-banner {
+  background: #23341c;
+  border: 1px solid #537445;
+  color: #d5f5c4;
+  border-radius: 10px;
+  padding: 14px 18px;
+  margin-bottom: 20px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.search-filters{display:flex;flex-wrap:wrap;gap:1rem;align-items:center;margin:1rem 0;color:var(--muted,#aaa)}
+.search-filters label{display:flex;gap:.4rem;align-items:center;font-size:.8rem}
+.search-filters input[type=number]{width:6rem}.search-filters input,.search-filters select{background:#1c1c1c;color:#fff;border:1px solid #444;border-radius:.5rem;padding:.45rem}
+.mode-toggle{display:flex;gap:.5rem;margin:0 0 1rem}.mode-toggle button,.move-studio button,.move-studio select{border:1px solid #45463e;background:#20221e;color:#f4f5e8;padding:.7rem 1rem;border-radius:.8rem;cursor:pointer}.mode-toggle button[aria-pressed=true]{background:#d6ef7e;color:#18210c;border-color:#d6ef7e}.move-studio{margin-bottom:2rem}.move-header{display:flex;justify-content:space-between;gap:1rem;align-items:start}.move-header h2{font-size:clamp(2rem,4vw,3.5rem);margin:.4rem 0}.move-header p,.move-hint{color:#aaa;line-height:1.5}.move-badge{font-size:.65rem;letter-spacing:.1em;border:1px solid #4e5543;border-radius:2rem;padding:.6rem;white-space:nowrap}.move-layout{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem}.move-card{background:#20211e;border:1px solid #3a3c34;border-radius:1.4rem;padding:1.2rem;min-width:0}.move-card h3{font-size:1.3rem;margin:.8rem 0}.move-card input{width:100%;background:#161714;border:1px solid #45483e;color:#f7f8ea;border-radius:.6rem;padding:.65rem;margin:.3rem 0 .7rem}.move-card label{display:block;font-size:.8rem;color:#ccc}.move-card summary{cursor:pointer;margin:1rem 0;color:#d6ef7e}.move-card button:disabled{opacity:.5}.move-budget{border-top:1px solid #45483e;margin-top:1rem;padding-top:1rem;display:grid;gap:.3rem}.move-budget span,.move-budget small{font-size:.7rem;color:#aaa}.move-budget strong{font-size:1.5rem}.move-question{background:#303a23;padding:.8rem;border-radius:.7rem}.move-history,.move-timeline{font-size:.85rem;color:#ccc;line-height:1.5}.move-item{border-top:1px solid #45483e;padding:1rem 0;display:grid;gap:.4rem}.move-item span{color:#d6ef7e;text-transform:capitalize}.move-item small{display:block;color:#aaa}.move-actions,.move-people{display:flex;gap:.5rem;flex-wrap:wrap}.move-people span{background:#323c29;color:#d6ef7e;border-radius:2rem;padding:.4rem .8rem}.move-empty{color:#888;font-size:.9rem}@media(max-width:1100px){.move-layout{grid-template-columns:1fr}.move-header{flex-wrap:wrap}}
+.relocation-desk{margin-top:1.5rem;color:#aaa;max-width:34rem}.relocation-desk summary,.relocation-code summary{cursor:pointer;color:#d6ef7e;font-size:.8rem}.relocation-desk label{display:block;font-size:.75rem;margin:.5rem 0}.relocation-desk input,.relocation-code input{display:block;width:100%;background:#1c1e19;color:white;border:1px solid #465040;border-radius:.5rem;padding:.6rem;margin:.3rem 0}.relocation-desk button,.move-policy button{margin:.5rem .5rem .5rem 0;border:1px solid #4a5741;background:#25301f;color:#d9efb6;border-radius:.6rem;padding:.6rem}.move-policy{border:1px solid #46563a;border-radius:.8rem;padding:.8rem;margin:1rem 0}.move-policy p,.move-policy small{color:#b9c8af;font-size:.8rem}

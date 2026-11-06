@@ -7,10 +7,14 @@ from sqlalchemy.engine import make_url
 def database_url():
     value=os.getenv('DATABASE_URL')
     if not value:
+        if os.getenv('K_SERVICE') or os.getenv('REQUIRE_POSTGRES','').lower()=='true':
+            raise ValueError('DATABASE_URL for PostgreSQL is required in production')
         return 'sqlite:///'+os.getenv('SHOPSIDE_DB','/tmp/shopside.sqlite3')
     if value.startswith('postgres://'): value='postgresql+psycopg://'+value[len('postgres://'):]
     elif value.startswith('postgresql://'): value='postgresql+psycopg://'+value[len('postgresql://'):]
     url=make_url(value)
+    if (os.getenv('K_SERVICE') or os.getenv('REQUIRE_POSTGRES','').lower()=='true') and url.get_backend_name()!='postgresql':
+        raise ValueError('PostgreSQL is required in production')
     if url.get_backend_name() not in ('postgresql','sqlite'):
         raise ValueError('DATABASE_URL must use PostgreSQL or SQLite')
     return value

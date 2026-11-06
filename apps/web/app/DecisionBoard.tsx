@@ -29,7 +29,7 @@ export default function DecisionBoard({
             (p.offers[0].price_cents / 100).toFixed(2)
           : "Unknown",
     variant: p.variant || "Unknown",
-    microphone: p.attributes?.microphone_quality || "Unknown",
+    category: p.category || "Unknown",
     evidence:
       p.provenance === "channel3"
         ? "Channel3 · " + new Date(p.retrieved_at * 1000).toLocaleString()
@@ -39,7 +39,7 @@ export default function DecisionBoard({
   return (
     <section className="board">
       <p className="eyebrow">OUR DECISION BOARD</p>
-      <small>AG Grid comparison fallback · Studio access pending</small>
+      <small>Compare the details you have together.</small>
       <nav>
         {["Browse", "Compare", "Decide"].map((p) => (
           <button
@@ -54,7 +54,7 @@ export default function DecisionBoard({
       <h3>Our priorities</h3>
       <p>
         Confirmed budget:{" "}
-        {room.budget ? "$" + (room.budget / 100).toFixed(2) : "Not set"}
+        {room.mode === "move_in" && room.move_in?.mission?.budget_cents != null ? room.move_in.mission.currency + " " + (room.move_in.mission.budget_cents / 100).toFixed(2) : room.budget ? "$" + (room.budget / 100).toFixed(2) : "Not set"}
       </p>
       {Object.entries(room.preferences || {}).map(([name, v]) => (
         <p key={name}>
@@ -79,7 +79,7 @@ export default function DecisionBoard({
               "name",
               "price",
               "variant",
-              "microphone",
+              "category",
               "evidence",
               "reactions",
             ] as const
@@ -113,8 +113,7 @@ export default function DecisionBoard({
           : "No item chosen"}
       </p>
       <p>
-        Agreement is shown only through explicit likes. Unstated objections are
-        unknown.
+        Likes and approvals are separate. Both participants must explicitly approve a choice.
       </p>
       <small>
         No comparable sourced numeric attribute is available, so no score or

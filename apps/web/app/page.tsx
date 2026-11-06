@@ -1,9 +1,13 @@
 "use client";
+import MoveIn from "./MoveIn";
+import RelocationDesk from "./RelocationDesk";
 import { useEffect, useState } from "react";
 import DecisionBoard from "./DecisionBoard";
 import AudioCall from "./AudioCall";
 import CartQuantity from "./CartQuantity";
 import Recommendations from "./Recommendations";
+import Concierge from "./Concierge";
+import ProductDetails from "./ProductDetails";
 import {
   ArrowDown,
   ArrowRight,
@@ -61,6 +65,13 @@ export default function Home() {
         .then(S)
         .catch((e) => E(e.message));
   }, []);
+  const [shoppingRequest, setShoppingRequest] = useState("");
+  const [mode, setMode] = useState("move_in");
+  const [relocationCode, setRelocationCode] = useState("");
+  const [minPrice, setMinPrice] = useState("");
+  const [maxPrice, setMaxPrice] = useState("");
+  const [inStock, setInStock] = useState(false);
+  const [searchMode, setSearchMode] = useState("default");
   const [copied, CopyDone] = useState(false);
   const [cartOpen, setCartOpen] = useState(false),
     [notice, setNotice] = useState("");
@@ -141,13 +152,25 @@ export default function Home() {
 
   async function enter() {
     try {
-      const result = await api(invite ? "join/" + invite : "rooms", { name });
+      const result = await api(invite ? "join/" + invite : "rooms", { name, mode: invite ? "general" : mode, relocation_code: invite ? "" : relocationCode.trim(), initial_request: invite ? "" : shoppingRequest.trim() });
       const r = result.room || result;
       S(r);
       history.replaceState({}, "", "?room=" + r.id);
       if (result.invite) I(result.invite);
       else I(r.invite);
       E("");
+      if (!invite && shoppingRequest.trim()) {
+        try {
+          await api("rooms/" + r.id + (mode === "move_in" ? "/move-in/turn" : "/concierge"), {
+            text: shoppingRequest.trim(),
+            action: "answer",
+            revision: r.revision,
+            command_id: crypto.randomUUID(),
+          });
+        } catch (err: any) {
+          E(err.message);
+        }
+      }
     } catch (e: any) {
       E(e.message);
     }
@@ -202,17 +225,26 @@ export default function Home() {
 
   const all = [...catalog, ...(room?.discovery || [])];
   const p = all.find((p) => p.id === room?.focus);
-  async function discover() {
+  async function discover(pageToken?: string) {
     try {
-      await api("rooms/" + room.id + "/discovery", {
+      await api("rooms/" + room.id + "/search", {
         query,
-        max_price: room.budget ? room.budget / 100 : undefined,
+        min_price: minPrice ? Number(minPrice) : undefined,
+        max_price: maxPrice ? Number(maxPrice) : undefined,
+        availability: inStock ? ["InStock"] : [],
+        mode: room.mode === "move_in" && searchMode === "default" ? "agentic" : searchMode,
+        country: room.move_in?.mission?.country || undefined,
+        currency: room.move_in?.mission?.currency || undefined,
+        page_token: pageToken,
+        revision: room.revision,
+        command_id: crypto.randomUUID(),
       });
       E("");
     } catch (e: any) {
       E(e.message);
     }
   }
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -310,14 +342,13 @@ export default function Home() {
                 <span /> YOUR SPACE TO CHOOSE TOGETHER
               </div>
               <h1>
-                Different places.
+                Make your next
                 <br />
-                <em>Same great finds.</em>
+                <em>place feel like home.</em>
               </h1>
               <p>
-                All the opinions, none of the endless links. ShopSide brings
-                your favorite people and your next favorite thing into one
-                space.
+                Find products you’ll love, invite someone you trust, and make
+                the decision together.
               </p>
               <form
                 className="welcome-form"
@@ -326,6 +357,19 @@ export default function Home() {
                   enter();
                 }}
               >
+                <div className="mode-toggle" aria-label="Shopping mode"><button type="button" aria-pressed={mode === "move_in"} onClick={() => setMode("move_in")}>Move-In Studio</button><button type="button" aria-pressed={mode === "general"} onClick={() => setMode("general")}>General shopping</button></div>
+                <label htmlFor="welcome-shopping">
+                  WHAT ARE YOU SHOPPING FOR TODAY?
+                </label>
+                <input
+                  id="welcome-shopping"
+                  aria-label="What are you shopping for today?"
+                  placeholder={mode === "move_in" ? "We’re moving next Friday. We need a kitchen and office under $500…" : "I need luggage for my trip…"}
+                  value={shoppingRequest}
+                  onChange={(e) => setShoppingRequest(e.target.value)}
+                  maxLength={2000}
+                />
+                {!invite && mode === "move_in" && <details className="relocation-code"><summary>Have a relocation allocation?</summary><label>Private allocation code<input aria-label="Relocation allocation code" value={relocationCode} onChange={e=>setRelocationCode(e.target.value)} /></label></details>}
                 <label htmlFor="welcome-name">WHAT SHOULD WE CALL YOU?</label>
                 <div>
                   <input
@@ -342,6 +386,7 @@ export default function Home() {
                   </button>
                 </div>
               </form>
+              <RelocationDesk />
               <div className="welcome-note">
                 <span className="mini-avatars">
                   <b>K</b>
@@ -361,16 +406,16 @@ export default function Home() {
                 <span>01 / 08</span>
               </div>
               <img
-                src="/products/headphones-render.png"
-                alt="Illustrative rendering of fictional headphones"
+                src={mode === "move_in" ? "/products/home-essentials.svg" : "/products/headphones-render.png"}
+                alt={mode === "move_in" ? "Illustration of a welcoming home" : "Illustrative rendering of fictional headphones"}
               />
               <div className="welcome-art-bottom">
                 <div>
                   <span>MADE FOR SHARED MOMENTS</span>
                   <strong>
-                    Find your
+                    {mode === "move_in" ? "A new chapter," : "Find your"}
                     <br />
-                    perfect match.
+                    {mode === "move_in" ? "better together." : "perfect match."}
                   </strong>
                 </div>
                 <span className="art-arrow">
@@ -426,6 +471,15 @@ export default function Home() {
           </div>
           <main className={"room tab-" + tab}>
             <section id="shop" className="shop-column">
+              {room.mode === "move_in" ? <MoveIn room={room} online={online} me={me} api={api} /> : <Concierge room={room} online={online} />}
+              {room.agreed_product && (
+                <div role="status" className="agreement-banner">
+                  ✓ We chose{" "}
+                  {all.find((item) => item.id === room.agreed_product)?.name ||
+                    "this item"}{" "}
+                  together.
+                </div>
+              )}
               <div className="section-heading">
                 <div>
                   <span className="section-kicker">
@@ -515,6 +569,20 @@ export default function Home() {
                         </span>
                       </button>
                     </div>
+                    <button
+                      className="agreement-button"
+                      disabled={!online || !p}
+                      onClick={() => command("agreement", p.id)}
+                    >
+                      {room.agreement_votes?.[me?.name] === p?.id
+                        ? "You agree with this choice"
+                        : "Agree on this choice"}
+                    </button>
+                    {room.agreed_product === p?.id && (
+                      <p role="status" className="agreement-success">
+                        ✓ We chose this together.
+                      </p>
+                    )}
                     <p className="reaction-caption">
                       {(room.reactions[p?.id] || []).length
                         ? (room.reactions[p?.id] || []).join(", ") +
@@ -530,6 +598,9 @@ export default function Home() {
                   </p>
                 )}
               </article>
+              {p?.provenance === "channel3" && (
+                <ProductDetails product={p} room={room} online={online} />
+              )}
               {p?.provenance === "channel3" ? (
                 <div className="cart-controls">
                   <span className="retailer-copy">
@@ -561,7 +632,7 @@ export default function Home() {
                       value={variant}
                       onChange={(e) => Variant(e.target.value)}
                     >
-                      <option value="standard">Sage / standard</option>
+                      <option value="standard">Standard</option>
                       <option value="midnight">Midnight</option>
                     </select>
                   </label>
@@ -629,6 +700,13 @@ export default function Home() {
                     Search Channel3 <ArrowRight size={15} />
                   </button>
                 </form>
+                <div className="search-filters">
+                  <label>Min price <input aria-label="Minimum price" type="number" min="0" value={minPrice} onChange={e => setMinPrice(e.target.value)} /></label>
+                  <label>Max price <input aria-label="Maximum price" type="number" min="0" value={maxPrice} onChange={e => setMaxPrice(e.target.value)} /></label>
+                  <label><input type="checkbox" checked={inStock} onChange={e => setInStock(e.target.checked)} /> In stock</label>
+                  <label>Search mode <select value={searchMode} onChange={e => setSearchMode(e.target.value)}><option value="default">Standard</option><option value="agentic">Agentic</option><option value="keyword">Keyword</option></select></label>
+                </div>
+                {room.search_page_token && room.search_query === query && <button onClick={() => discover(room.search_page_token)}>Next results</button>}
                 {room.discovery?.length > 0 && (
                   <div className="live-grid">
                     {room.discovery.map((item: any) => (
@@ -637,6 +715,7 @@ export default function Home() {
                         <div>
                           <span className="card-tag">LIVE DISCOVERY</span>
                           <h3>{item.name}</h3>
+                          {(item.key_features?.[0] || item.description) && <p>{item.key_features?.[0] || item.description}</p>}
                           <div className="live-actions">
                             <button
                               disabled={!online}
@@ -710,7 +789,7 @@ export default function Home() {
                   </div>
                 </div>
                 <div className="catalog">
-                  {catalog
+                  {[...catalog].sort((a,b) => room.mode === "move_in" ? Number(Number(b.id) >= 11) - Number(Number(a.id) >= 11) : 0)
                     .filter((item) =>
                       item.name.toLowerCase().includes(query.toLowerCase()),
                     )
@@ -729,7 +808,9 @@ export default function Home() {
                           <span className="product-card-number">0{i + 1}</span>
                           <img
                             className="mini"
-                            src="/products/headphones-render.png"
+                            src={
+                              item.image || "/products/headphones-render.png"
+                            }
                             alt=""
                           />
                           <span className="product-card-arrow">

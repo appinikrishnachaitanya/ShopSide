@@ -1,11 +1,4 @@
-import os, tempfile
-os.environ['SHOPSIDE_DB']=tempfile.mktemp()
-# Never run destructive integration tests against an ambient deployment database.
-# PostgreSQL tests require an explicit, disposable test database URL.
-if os.getenv('SHOPSIDE_TEST_DATABASE_URL'):
-    os.environ['DATABASE_URL']=os.environ['SHOPSIDE_TEST_DATABASE_URL']
-else:
-    os.environ.pop('DATABASE_URL',None)
+import os
 from fastapi.testclient import TestClient
 from app.main import app
 
@@ -38,11 +31,12 @@ def test_cart_quote_authority_and_freeze():
     assert a.get(base).json()['checkout'] is None
 
 def test_websocket_membership_and_origin():
-    a=TestClient(app); result=a.post('/api/rooms',json={'name':'A'}).json(); r=result['room']['id']
-    with a.websocket_connect('/api/rooms/'+r+'/live',headers={'origin':'http://localhost:3000'}) as ws:
-        assert ws.receive_json()['people']==['A']
-        assert a.post('/api/rooms/'+r+'/commands',json={'command_id':'ws','revision':0,'kind':'focus','value':'3'}).status_code==200
-        assert ws.receive_json()['focus']=='3'
+    with TestClient(app) as a:
+        result=a.post('/api/rooms',json={'name':'A'}).json(); r=result['room']['id']
+        with a.websocket_connect('/api/rooms/'+r+'/live',headers={'origin':'http://localhost:3000'}) as ws:
+            assert ws.receive_json()['people']==['A']
+            assert a.post('/api/rooms/'+r+'/commands',json={'command_id':'ws','revision':0,'kind':'focus','value':'3'}).status_code==200
+            assert ws.receive_json()['focus']=='3'
 
 def test_verified_capture_and_pending_recovery(monkeypatch):
     import app.main as main
