@@ -4,4 +4,4 @@ COPY package*.json ./
 RUN npm ci
 COPY . .
 RUN npm run build
-CMD ["npm", "run", "dev"]
+CMD ["npx", "next", "start", "--hostname", "0.0.0.0"]

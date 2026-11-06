@@ -93,3 +93,30 @@ def test_variant_quantity_reservation_cancel_and_replay():
     assert main.stock('7','midnight')==before
     assert a.post(base+'/payments/'+q['id']+'/create').status_code==409
     assert a.post(base+'/payments/'+q['id']+'/cancel').status_code==409
+
+def test_lost_capture_response_reconciles_without_second_charge(monkeypatch):
+    import app.main as main
+    import httpx
+    monkeypatch.setenv('PAYPAL_MERCHANT_ID','merchant')
+    a=TestClient(app); r=a.post('/api/rooms',json={'name':'Payer'}).json()['room']['id']; base='/api/rooms/'+r
+    a.post(base+'/commands',json={'command_id':'cart','revision':0,'kind':'cart','value':'6'})
+    q=a.post(base+'/quote').json(); url=base+'/payments/'+q['id']; captures=[]
+    async def fake(method,path,payload=None,operation=None):
+        if path=='/v2/checkout/orders': return {'id':'lost-response-order'}
+        if path.endswith('/capture'):
+            captures.append(operation); raise httpx.ReadTimeout('lost response')
+        return {'status':'COMPLETED','purchase_units':[{'payee':{'merchant_id':'merchant'},'payments':{'captures':[{'id':'reconciled','status':'COMPLETED','amount':{'currency_code':'USD','value':'49.00'}}]}}]}
+    monkeypatch.setattr(main,'paypal',fake)
+    assert a.post(url+'/create').status_code==200
+    assert a.post(url+'/capture').status_code==502
+    assert a.post(url+'/capture').json()['status']=='paid'
+    assert len(captures)==1
+    assert a.get(base+'/checkout').json()['capture']=='reconciled'
+
+def test_foreign_origin_and_friend_receipt_access():
+    a,b=TestClient(app),TestClient(app)
+    result=a.post('/api/rooms',json={'name':'Payer'}).json(); base='/api/rooms/'+result['room']['id']
+    b.post('/api/join/'+result['invite'],json={'name':'Friend'})
+    assert b.get(base+'/checkout').status_code==403
+    assert b.get(base+'/me').json()['is_payer'] is False
+    assert a.post(base+'/commands',headers={'origin':'https://foreign.example'},json={'command_id':'csrf','revision':1,'kind':'chat','value':'bad'}).status_code==403

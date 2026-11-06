@@ -9,6 +9,8 @@ app = FastAPI(title='ShopSide')
 limits={}
 @app.middleware('http')
 async def throttle(request,call_next):
+    if request.method not in ['GET','HEAD','OPTIONS'] and request.headers.get('origin') and request.headers['origin']!=os.getenv('WEB_ORIGIN','http://localhost:3000'):
+        return Response('Origin not allowed',status_code=403)
     if '/join/' in request.url.path or request.url.path.endswith('/agent'):
         key=(request.client.host,request.url.path.split('/')[-1]=='agent')
         now=time.monotonic(); hits=[t for t in limits.get(key,[]) if now-t<60]
@@ -17,6 +19,10 @@ async def throttle(request,call_next):
     return await call_next(request)
 
 lock = threading.RLock()
+subscribers={}
+def notify(r):
+    for loop,event in list(subscribers.get(r,set())):
+        if not loop.is_closed(): loop.call_soon_threadsafe(event.set)
 engine=create_engine('sqlite:///'+os.getenv('SHOPSIDE_DB','/tmp/shopside.sqlite3'),connect_args={'check_same_thread':False,'timeout':5})
 _connection=engine.raw_connection()
 db=_connection.driver_connection
@@ -52,7 +58,7 @@ def load(r):
     if not row: raise HTTPException(404,'Room not found')
     return json.loads(row[0])
 def save(r,s):
-    db.execute('UPDATE rooms SET state=? WHERE id=?',(json.dumps(s),r)); db.commit()
+    db.execute('UPDATE rooms SET state=? WHERE id=?',(json.dumps(s),r)); db.commit(); notify(r)
 def auth(r,request):
     row=db.execute('SELECT name FROM members WHERE room=? AND token=?',(r,request.cookies.get('membership',''))).fetchone()
     if not row: raise HTTPException(403,'Membership required')
@@ -60,7 +66,7 @@ def auth(r,request):
 def member(response,r,name):
     token=secrets.token_urlsafe(32)
     db.execute('INSERT INTO members VALUES(?,?,?)',(token,r,name)); db.commit()
-    response.set_cookie('membership',token,httponly=True,samesite='lax',max_age=604800)
+    response.set_cookie('membership',token,secure=os.getenv('COOKIE_SECURE','false').lower()=='true',httponly=True,samesite='lax',max_age=604800)
 @app.get('/api/catalog')
 def products(): return catalog
 @app.post('/api/rooms')
@@ -104,6 +110,9 @@ def command(r:str,body:Command,request:Request):
             ids=body.value.split(',')
             if not 2<=len(ids)<=3 or len(set(ids))!=len(ids) or any(i not in [p['id'] for p in catalog]+[p['id'] for p in s.get('discovery',[])] for i in ids): raise HTTPException(422,'Select two different products')
             s['comparison']=ids
+        elif body.kind=='title':
+            if not body.value.strip() or len(body.value)>100: raise HTTPException(422,'Room title must be 1–100 characters')
+            s['title']=body.value.strip()
         elif body.kind=='board_preset':
             if body.value not in ['Browse','Compare','Decide']: raise HTTPException(422,'Unknown preset')
             s['board_preset']=body.value
@@ -146,14 +155,25 @@ async def live(ws:WebSocket,r:str):
     try: auth(r,ws)
     except HTTPException:
         await ws.close(code=1008); return
-    await ws.accept(); revision=-1
+    await ws.accept()
+    loop=asyncio.get_running_loop(); changed=asyncio.Event(); entry=(loop,changed)
+    with lock: subscribers.setdefault(r,set()).add(entry)
     try:
         while True:
+            changed.clear()
             with lock: state=load(r)
-            if revision!=state['revision']:
-                revision=state['revision']; await ws.send_json({k:v for k,v in state.items() if k!='commands'})
-            await asyncio.sleep(.15)
+            await ws.send_json({k:v for k,v in state.items() if k!='commands'})
+            waiter=asyncio.create_task(changed.wait())
+            receiver=asyncio.create_task(ws.receive())
+            done,pending=await asyncio.wait([waiter,receiver],return_when=asyncio.FIRST_COMPLETED)
+            for task in pending: task.cancel()
+            await asyncio.gather(*pending,return_exceptions=True)
+            if receiver in done and receiver.result()['type']=='websocket.disconnect': break
     except (WebSocketDisconnect,RuntimeError): pass
+    finally:
+        with lock:
+            subscribers.get(r,set()).discard(entry)
+
 
 busy=set()
 class Ask(BaseModel):
@@ -170,6 +190,7 @@ async def agent(r:str,body:Ask,request:Request):
         busy.add(r)
     deadline=time.monotonic()+40
     turn_proposals=[]
+    tool_calls=0
     try:
         from google import genai
         from google.genai import types
@@ -192,6 +213,7 @@ async def agent(r:str,body:Ask,request:Request):
         def discover_products(query:str,max_price:float=100000)->list[dict]:
             """Search Channel3 live products and share results with both members."""
             found=search_products(query,max_price)
+            if time.monotonic()>deadline: return []
             with lock:
                 s=load(r); s['discovery']=found; s['revision']+=1; save(r,s)
             return found
@@ -218,7 +240,10 @@ async def agent(r:str,body:Ask,request:Request):
         def observed(fn):
             @functools.wraps(fn)
             def call(*args,**kwargs):
+                nonlocal tool_calls
                 if time.monotonic()>deadline: return {'error':'Agent turn expired'}
+                if tool_calls>=5: return {'error':'Five tool call limit reached'}
+                tool_calls+=1
                 result=fn(*args,**kwargs)
                 with lock:
                     s=load(r); s.setdefault('activity',[]).append({'tool':fn.__name__,'outcome':'completed'}); s['revision']+=1; save(r,s)
@@ -339,3 +364,9 @@ def current_checkout(r:str,request:Request):
         if not s.get('checkout'): return None
         p=payment_load(s['checkout']['id'],r)
         return {k:p.get(k) for k in ['id','revision','items','total','fees','currency','expires','status','capture']}
+
+@app.get('/api/rooms/{r}/me')
+def whoami(r:str,request:Request):
+    with lock:
+        actor=auth(r,request); s=load(r)
+        return {'name':actor,'is_payer':actor==s['payer']}

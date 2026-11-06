@@ -27,7 +27,7 @@ Gemini integration uses the Google Gen AI SDK and tools with a five-call automat
 
 Sandbox payment endpoints implement payer-only frozen quotes, durable operation/request IDs, create, capture, provider read-back, minimal shared status and payer-only capture receipt response. Set sandbox credentials from `.env.example`. Unknown provider outcomes require status checks. No live inference or real sandbox purchase has been verified yet.
 
-Run exactly one API worker. SQLite JSON room records and process-local locks are an initial implementation; stronger stock accounting, crash/restart payment reconciliation coverage, signed webhooks, multi-item/quantity controls, richer variant data, full accessibility checks, photographic assets and release evidence remain unfinished. A quote can only be cancelled before provider creation; otherwise reconcile its status. No webhook endpoint is exposed.
+Run exactly one API worker. SQLite JSON room records and process-local locks are an initial implementation; crash/restart payment reconciliation coverage, signed webhooks, richer variant evidence, full accessibility checks, photographic assets and release evidence remain unfinished. A quote can only be cancelled before provider creation; otherwise reconcile its status. No webhook endpoint is exposed.
 
 Docker Compose is provided but has not been built here: copy `.env.example` to `.env`, enter credentials securely, and run `docker compose up --build`. Never commit `.env`.
 
@@ -42,3 +42,5 @@ See [verification](docs/VERIFICATION.md), [judge/demo guide](docs/DEMO.md), and 
 
 ## Revised sponsor scope
 Channel3 shared discovery and product details are implemented against its published v1 contract. Set `CHANNEL3_API_KEY`; missing credentials show an explicit error. Live products use retailer links and cannot enter demo PayPal checkout. The board uses real AG Grid Community as the revised brief's permitted fallback; AG Studio access remains blocked. See [sponsor status](docs/SPONSOR-STATUS.md) for implementation and verification boundaries.
+
+Detailed credential and networking instructions: [environment configuration](docs/ENVIRONMENT.md). Run `bash scripts/dev.sh` from a fresh checkout for local setup/startup.

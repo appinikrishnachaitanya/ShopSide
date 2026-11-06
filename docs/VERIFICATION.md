@@ -11,3 +11,10 @@
 - Production build passed with AG Grid Community 36.3.0.
 - Desktop/mobile Playwright shared-room test rerun passed (1 test, 4.2s).
 - Real Channel3 request and AG Studio integration remain unverified/blocked as detailed in SPONSOR-STATUS.md.
+
+## Checkout hardening
+- Nine backend tests passed: added lost capture response reconciliation, receipt authorization, foreign-origin rejection, variant pricing, inventory reservation/release and cancelled-operation replay.
+- Expanded desktop/mobile browser journey passed: create/join, spotlight/reaction, refresh, shared shortlist/chat, midnight variant × 2, exact $198 quote, friend checkout disabled and safe quote cancellation.
+- Fixed quote review sending GET instead of POST, discovered by that browser test.
+- Event-driven WebSocket subscriber notifications replace polling of SQLite.
+- Live credentials, Studio access, real identity/offer matching and actual pair feedback remain outstanding; passing offline checks do not establish provider success.
