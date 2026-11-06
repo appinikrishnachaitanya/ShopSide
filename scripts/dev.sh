@@ -10,6 +10,7 @@ if [[ -f .env ]]; then
 fi
 export SHOPSIDE_DB="${SHOPSIDE_DB:-$PWD/shopside.sqlite3}"
 .venv/bin/alembic -c services/api/alembic.ini upgrade head
+(cd services/paypal-mcp && npm ci)
 (cd apps/web && npm ci)
 PYTHONPATH=services/api .venv/bin/uvicorn app.main:app --host 0.0.0.0 --workers 1 &
 api_pid=$!

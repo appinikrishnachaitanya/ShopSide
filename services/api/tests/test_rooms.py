@@ -120,3 +120,29 @@ def test_foreign_origin_and_friend_receipt_access():
     assert b.get(base+'/checkout').status_code==403
     assert b.get(base+'/me').json()['is_payer'] is False
     assert a.post(base+'/commands',headers={'origin':'https://foreign.example'},json={'command_id':'csrf','revision':1,'kind':'chat','value':'bad'}).status_code==403
+
+def test_adk_coordinates_real_room_tool_with_test_runner(monkeypatch):
+    """Explicitly fake model runner; validates ADK wiring and persisted tool outcomes."""
+    import google.adk.runners
+    from types import SimpleNamespace
+    import app.main as main
+    monkeypatch.setenv('GEMINI_API_KEY','test-key')
+    monkeypatch.setenv('GEMINI_MODEL','test-model')
+    seen={}
+    class Sessions:
+        async def create_session(self,**kwargs): return SimpleNamespace(id='test-session')
+    class Runner:
+        def __init__(self,agent,**kwargs): self.agent=agent; self.session_service=Sessions(); seen['agent']=agent
+        async def run_async(self,**kwargs):
+            tool=next(t for t in self.agent.tools if getattr(t,'__name__','')=='search_catalog')
+            assert tool(query='Quiet')[0]['name']=='Quiet Hours'
+            yield SimpleNamespace(is_final_response=lambda:True,content=SimpleNamespace(parts=[SimpleNamespace(text='Test runner response',thought=False)]))
+    monkeypatch.setattr(google.adk.runners,'InMemoryRunner',Runner)
+    a=TestClient(app);r=a.post('/api/rooms',json={'name':'A'}).json()['room']['id'];base='/api/rooms/'+r
+    assert a.post(base+'/agent',json={'text':'Find Quiet Hours','revision':0}).status_code==200
+    s=a.get(base).json()
+    assert s['activity'][-1]['tool']=='search_catalog'
+    assert s['messages'][-1]['actor']=='ShopSide'
+    names=[getattr(t,'__name__','') for t in seen['agent'].tools]
+    assert 'paypal_order_status' in names
+    assert not any(name in names for name in ['create_order','pay_order','capture_order'])
