@@ -82,3 +82,19 @@ def test_relocation_policy_auth_privacy_and_checkout_rules(monkeypatch):
     assert employee.post(base+'/commands',json={'kind':'cart','value':'11','revision':1,'command_id':'cart'}).status_code==200
     assert employee.post(base+'/relocation/check',json={'product_id':'11','revision':2}).json()['approval_required'] is True
     assert employee.post(base+'/quote').status_code==409
+
+def test_shared_room_placements_validate_and_sync():
+    import json
+    a,b,c=TestClient(app),TestClient(app),TestClient(app)
+    created=a.post('/api/rooms',json={'name':'A','mode':'move_in'}).json();base='/api/rooms/'+created['room']['id']
+    assert b.post('/api/join/'+created['invite'],json={'name':'B'}).status_code==200
+    value=json.dumps({'product_id':'11','x':1.2,'z':-0.5})
+    command={'kind':'placement_upsert','value':value,'revision':1,'command_id':'p1'}
+    assert c.post(base+'/commands',json=command).status_code==403
+    assert a.post(base+'/commands',json=command).status_code==200
+    assert b.get(base).json()['room_placements'][0]['x']==1.2
+    assert a.post(base+'/commands',json=command).status_code==200
+    assert b.post(base+'/commands',json={**command,'command_id':'stale'}).status_code==409
+    assert b.post(base+'/commands',json={'kind':'placement_upsert','value':json.dumps({'product_id':'11','x':9,'z':0}),'revision':2,'command_id':'bad'}).status_code==422
+    assert b.post(base+'/commands',json={'kind':'placement_remove','value':'11','revision':2,'command_id':'remove'}).status_code==200
+    assert a.get(base).json()['room_placements']==[]

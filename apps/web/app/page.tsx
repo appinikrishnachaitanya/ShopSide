@@ -1,5 +1,6 @@
 "use client";
 import MoveIn from "./MoveIn";
+import RoomPreview from "./RoomPreview";
 import RelocationDesk from "./RelocationDesk";
 import { useEffect, useState } from "react";
 import DecisionBoard from "./DecisionBoard";
@@ -339,7 +340,7 @@ export default function Home() {
           <div className="welcome-grid">
             <div className="welcome-copy">
               <div className="welcome-tag">
-                <span /> YOUR SPACE TO CHOOSE TOGETHER
+                <span /> GOOD TASTE. EVEN BETTER COMPANY.
               </div>
               <h1>
                 Make your next
@@ -347,8 +348,8 @@ export default function Home() {
                 <em>place feel like home.</em>
               </h1>
               <p>
-                Find products you’ll love, invite someone you trust, and make
-                the decision together.
+                Find your favorites, bring your favorite person, and make the
+                next chapter feel like yours.
               </p>
               <form
                 className="welcome-form"
@@ -359,7 +360,7 @@ export default function Home() {
               >
                 <div className="mode-toggle" aria-label="Shopping mode"><button type="button" aria-pressed={mode === "move_in"} onClick={() => setMode("move_in")}>Move-In Studio</button><button type="button" aria-pressed={mode === "general"} onClick={() => setMode("general")}>General shopping</button></div>
                 <label htmlFor="welcome-shopping">
-                  WHAT ARE YOU SHOPPING FOR TODAY?
+                  WHAT ARE WE LOOKING FOR?
                 </label>
                 <input
                   id="welcome-shopping"
@@ -399,15 +400,15 @@ export default function Home() {
                 </span>
               </div>
             </div>
-            <div className="welcome-art">
+            <div className={"welcome-art " + (mode === "move_in" ? "is-move-in" : "is-general")}>
               <div className="welcome-art-glow" />
               <div className="welcome-art-top">
                 <span>THE TOGETHER EDIT</span>
                 <span>01 / 08</span>
               </div>
               <img
-                src={mode === "move_in" ? "/products/home-essentials.svg" : "/products/headphones-render.png"}
-                alt={mode === "move_in" ? "Illustration of a welcoming home" : "Illustrative rendering of fictional headphones"}
+                src={mode === "move_in" ? "/products/next-chapter.webp" : "/products/headphones-render.png"}
+                alt={mode === "move_in" ? "Illustrative interior for the Move-In Studio" : "Illustrative rendering of fictional headphones"}
               />
               <div className="welcome-art-bottom">
                 <div>
@@ -471,7 +472,7 @@ export default function Home() {
           </div>
           <main className={"room tab-" + tab}>
             <section id="shop" className="shop-column">
-              {room.mode === "move_in" ? <MoveIn room={room} online={online} me={me} api={api} /> : <Concierge room={room} online={online} />}
+              {room.mode === "move_in" ? <><MoveIn room={room} online={online} me={me} api={api} /><RoomPreview room={room} focused={p} online={online} command={command} /></> : <Concierge room={room} online={online} />}
               {room.agreed_product && (
                 <div role="status" className="agreement-banner">
                   ✓ We chose{" "}

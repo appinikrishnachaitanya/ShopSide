@@ -58,6 +58,11 @@ class Entry(BaseModel):
     initial_request: str = Field(default='',max_length=2000)
     mode: str = Field(default='general',pattern='^(general|move_in)$')
     relocation_code: str = Field(default='',max_length=100)
+class RoomPlacement(BaseModel):
+    product_id:str=Field(min_length=1,max_length=200)
+    x:float=Field(ge=-2.5,le=2.5,allow_inf_nan=False)
+    z:float=Field(ge=-2.5,le=2.5,allow_inf_nan=False)
+
 class Command(BaseModel):
     command_id: str = Field(min_length=1,max_length=100)
     revision: int
@@ -132,6 +137,20 @@ def command(r:str,body:Command,request:Request):
             ids=body.value.split(',')
             if not 2<=len(ids)<=3 or len(set(ids))!=len(ids) or any(i not in [p['id'] for p in catalog]+[p['id'] for p in s.get('discovery',[])] for i in ids): raise HTTPException(422,'Select two different products')
             s['comparison']=ids
+        elif body.kind=='placement_upsert':
+            if s.get('mode')!='move_in':raise HTTPException(409,'Room preview is available in Move-In Studio')
+            try: placement=RoomPlacement.model_validate_json(body.value)
+            except ValueError:raise HTTPException(422,'Invalid placement')
+            placements=s.setdefault('room_placements',[])
+            old=next((p for p in placements if p['product_id']==placement.product_id),None)
+            product=next((p for p in catalog+s.get('discovery',[]) if p['id']==placement.product_id),None)
+            if not product and not old:raise HTTPException(422,'Select a product in this room')
+            if not old and len(placements)>=20:raise HTTPException(422,'This room can hold up to 20 product markers')
+            updated={'product_id':placement.product_id,'name':product['name'] if product else old['name'],'x':placement.x,'z':placement.z,'updated_by':actor}
+            s['room_placements']=[p for p in placements if p['product_id']!=placement.product_id]+[updated]
+        elif body.kind=='placement_remove':
+            if s.get('mode')!='move_in':raise HTTPException(409,'Room preview is available in Move-In Studio')
+            s['room_placements']=[p for p in s.get('room_placements',[]) if p['product_id']!=body.value]
         elif body.kind=='title':
             if not body.value.strip() or len(body.value)>100: raise HTTPException(422,'Room title must be 1–100 characters')
             s['title']=body.value.strip()

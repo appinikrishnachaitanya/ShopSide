@@ -16,3 +16,7 @@ The illustrative Relocation Desk uses a separate administrator bearer token and 
 2. Choose **Find essentials with Channel3**. Review real product cards and retailer offers; focus an item, explore details or similar products, and add it to the shared plan.
 3. Invite a second person. Each person enters their preference, optionally uses the decision assistant, and explicitly approves the same plan item. The timeline and approval state appear to both people.
 4. For the fictional home lamp, add the item to the shared cart. The designated payer reviews the exact USD sandbox quote and approves through PayPal. If approved, capture and check the provider status; never represent this as a purchase of an external Channel3 product.
+
+## Shared 3D room
+
+The Move-In workspace includes a Three.js room. Either room member can focus a catalog or Channel3 product, choose a position in the preview, and move or remove its shared marker. Placements are persisted in the existing room state and broadcast through the existing room WebSocket, with membership, command idempotency and revision checks. The room and markers are illustrative; Channel3 listings do not supply verified 3D models or dimension data in this integration, so the preview cannot establish that an item fits. If WebGL is unavailable, the placement list and center-placement controls remain usable. No new environment variable or schema migration is required for the room preview.
