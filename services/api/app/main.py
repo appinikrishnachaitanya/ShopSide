@@ -31,7 +31,7 @@ db.execute('PRAGMA journal_mode=WAL')
 db.execute('PRAGMA busy_timeout=5000')
 db.execute('CREATE TABLE IF NOT EXISTS rooms(id TEXT PRIMARY KEY, invite TEXT UNIQUE, state TEXT)')
 db.execute('CREATE TABLE IF NOT EXISTS members(token TEXT PRIMARY KEY, room TEXT, name TEXT)')
-catalog = [dict(id=str(i), name=n, price=p, currency='USD', description='Fictional sample headphones · demo inventory') for i,(n,p) in enumerate([('Sunday Studio',8900),('Everyday Air',6900),('Quiet Hours',9900),('City Rhythm',7900),('Soft Signal',5900),('Open Road',9500),('Little Escape',4900),('Evening Edit',8500)])]
+catalog = [dict(id=str(i), name=n, price=p, currency='USD', description='Fictional sample headphones · ShopSide collection') for i,(n,p) in enumerate([('Sunday Studio',8900),('Everyday Air',6900),('Quiet Hours',9900),('City Rhythm',7900),('Soft Signal',5900),('Open Road',9500),('Little Escape',4900),('Evening Edit',8500)])]
 for product in catalog:
     product.update(variant='standard',stock=20,attributes={'microphone_quality':None,'connection':'Bluetooth','color':'Sage'},evidence='Fictional fixture specification; no measured microphone data.')
 db.execute('CREATE TABLE IF NOT EXISTS inventory(product TEXT, variant TEXT, stock INTEGER NOT NULL, PRIMARY KEY(product,variant))')
