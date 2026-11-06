@@ -1,5 +1,6 @@
 "use client";
 import MoveIn from "./MoveIn";
+import MemoryReceipt from "./MemoryReceipt";
 import RoomPreview from "./RoomPreview";
 import WhyPick from "./WhyPick";
 import RelocationDesk from "./RelocationDesk";
@@ -11,7 +12,6 @@ import Recommendations from "./Recommendations";
 import Concierge from "./Concierge";
 import ProductDetails from "./ProductDetails";
 import {
-  ArrowDown,
   ArrowRight,
   ArrowUpRight,
   Check,
@@ -23,7 +23,6 @@ import {
   Search,
   ShoppingBag,
   Sparkles,
-  Users,
   Zap,
 } from "lucide-react";
 export default function Home() {
@@ -277,7 +276,7 @@ export default function Home() {
                   {person.charAt(0).toUpperCase()}
                 </span>
               ))}
-              {room.people.length < 2 && (
+              {room.people.length < 4 && (
                 <span className="avatar avatar-empty">+</span>
               )}
             </div>
@@ -427,7 +426,7 @@ export default function Home() {
               <div className="floating-note">
                 <Heart size={16} fill="currentColor" />
                 <span>
-                  <strong>Made for two</strong>
+                  <strong>Better together</strong>
                   <small>Decide together, from anywhere.</small>
                 </span>
               </div>
@@ -473,7 +472,7 @@ export default function Home() {
           </div>
           <main className={"room tab-" + tab}>
             <section id="shop" className="shop-column">
-              {room.mode === "move_in" ? <><MoveIn room={room} online={online} me={me} api={api} /><RoomPreview room={room} focused={p} online={online} me={me} command={command} /></> : <Concierge room={room} online={online} />}
+              {room.mode === "move_in" ? <><MoveIn room={room} online={online} me={me} api={api} /><MemoryReceipt room={room} online={online} /><RoomPreview room={room} focused={p} online={online} me={me} command={command} /></> : <Concierge room={room} online={online} />}
               {room.agreed_product && (
                 <div role="status" className="agreement-banner">
                   ✓ We chose{" "}

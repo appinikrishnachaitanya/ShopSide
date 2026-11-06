@@ -8,6 +8,9 @@ export default function Recommendations({
   products: any[];
   select: (id: string) => void;
 }) {
+  const mission = room.mode === "move_in" ? room.move_in?.mission : null;
+  const confirmedBudget = mission?.budget_cents ?? room.budget;
+  const budgetCurrency = mission?.budget_cents != null ? mission.currency : "USD";
   const preferences = Object.entries(room.preferences || {}).filter(([, v]) =>
     String(v).trim(),
   );
@@ -36,7 +39,7 @@ export default function Recommendations({
         <span className="eyebrow">A LITTLE HELP DECIDING</span>
         <h2>Find your common ground.</h2>
         <p>
-          Share what matters to each of you and save a few favorites. Your
+          Share what matters to everyone and save a few favorites. Your
           shortlist and priorities will appear here.
         </p>
       </section>
@@ -51,9 +54,9 @@ export default function Recommendations({
             <strong>{who}:</strong> {String(value)}
           </span>
         ))}
-        {room.budget != null && (
+        {confirmedBudget != null && (
           <span>
-            <strong>Budget:</strong> ${(room.budget / 100).toFixed(2)}
+            <strong>Budget:</strong> {budgetCurrency} {(confirmedBudget / 100).toFixed(2)}
           </span>
         )}
       </div>
@@ -65,15 +68,16 @@ export default function Recommendations({
           </p>
           <div className="recommended-list">
             {items.map((p: any) => {
-              const amount = p.price ?? p.offers?.[0]?.price_cents;
-              const currency =
-                p.price != null ? "USD" : p.offers?.[0]?.currency;
-              const budget =
-                room.budget != null && currency === "USD" && amount != null
-                  ? amount <= room.budget
-                    ? "Within confirmed budget"
-                    : "Above confirmed budget"
-                  : null;
+              const matchingOffer = p.offers?.find((o: any) => o.currency === budgetCurrency && typeof o.price_cents === "number");
+              const observed = room.move_in?.items?.[p.id];
+              const amount = p.currency === budgetCurrency && typeof p.price === "number"
+                ? p.price
+                : matchingOffer?.price_cents ?? (observed?.currency === budgetCurrency ? observed.observed_price_cents : null);
+              const budget = confirmedBudget != null && typeof amount === "number"
+                ? amount <= confirmedBudget
+                  ? "Within total budget (item only)"
+                  : "Above total budget (item only)"
+                : null;
               return (
                 <button key={p.id} onClick={() => select(p.id)}>
                   <span>

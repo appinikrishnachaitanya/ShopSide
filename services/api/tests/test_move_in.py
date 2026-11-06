@@ -117,3 +117,22 @@ def test_marker_reactions_are_independent_validated_and_shared():
     assert cmd(a,'marker_reaction',{'product_id':'11','reaction':'love'},4,'remove').status_code==200
     assert b.get(base).json()['marker_reactions']['11']=={'B':'price'}
     assert b.get(base).json().get('agreed_product') is None
+
+def test_four_member_room_requires_every_member_to_approve():
+    members=[TestClient(app) for _ in range(5)]
+    created=members[0].post('/api/rooms',json={'name':'A','mode':'move_in'}).json();base='/api/rooms/'+created['room']['id']
+    assert members[1].post('/api/join/'+created['invite'],json={'name':'B'}).status_code==200
+    def action(client,value):
+        state=client.get(base).json()
+        return client.post(base+'/move-in/item',json={'product_id':'11','approve':True,'revision':state['revision'],'command_id':value})
+    assert action(members[0],'a').status_code==200 and action(members[1],'b').status_code==200
+    assert members[0].get(base).json()['move_in']['items']['11']['status']=='agreed'
+    assert members[2].post('/api/join/'+created['invite'],json={'name':'C'}).status_code==200
+    assert members[3].post('/api/join/'+created['invite'],json={'name':'D'}).status_code==200
+    assert members[4].post('/api/join/'+created['invite'],json={'name':'E'}).status_code==409
+    assert members[0].get(base).json()['move_in']['items']['11']['status']=='proposed'
+    assert action(members[2],'c').status_code==200
+    assert members[0].get(base).json()['move_in']['items']['11']['status']=='proposed'
+    assert action(members[3],'d').status_code==200
+    state=members[0].get(base).json()
+    assert state['people']==['A','B','C','D'] and state['move_in']['items']['11']['status']=='agreed'

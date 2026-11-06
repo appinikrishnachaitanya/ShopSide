@@ -16,6 +16,7 @@ TABLES={
     'members':('token','room','name'),
     'payments':('id','room','state'),
     'inventory':('product','variant','stock'),
+    'relocation_policies':('id','state'),
 }
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
@@ -32,7 +33,13 @@ def main():
             for table in TABLES:
                 if dest.execute(text(f'SELECT COUNT(*) FROM {table}')).scalar_one():
                     raise RuntimeError(f'Destination table {table} is not empty; no data was imported')
+            source_tables={row[0] for row in source.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             for table,columns in TABLES.items():
+                if table not in source_tables:
+                    if table=='relocation_policies':
+                        print(f'{table}: not present in source; skipped')
+                        continue
+                    raise RuntimeError(f'Source table {table} is missing; no data was imported')
                 names=','.join(columns)
                 rows=source.execute(f'SELECT {names} FROM {table}').fetchall()
                 if rows:

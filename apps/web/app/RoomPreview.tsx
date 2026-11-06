@@ -10,7 +10,6 @@ const reactionOptions=[{key:"love",emoji:"❤️",label:"Love it"},{key:"price",
 
 export default function RoomPreview({room,focused,online,me,command}:Props) {
   const container=useRef<HTMLDivElement>(null);
-  const sceneRef=useRef<THREE.Scene|null>(null);
   const markersRef=useRef<THREE.Group|null>(null);
   const placeRef=useRef<(x:number,z:number)=>void>(()=>{});
   const selectRef=useRef<(id:string)=>void>(()=>{});
@@ -36,7 +35,7 @@ export default function RoomPreview({room,focused,online,me,command}:Props) {
     renderer.shadowMap.enabled=true;
     renderer.outputColorSpace=THREE.SRGBColorSpace;
     host.appendChild(renderer.domElement);
-    const scene=new THREE.Scene();scene.background=new THREE.Color('#dce2f8');sceneRef.current=scene;
+    const scene=new THREE.Scene();scene.background=new THREE.Color('#dce2f8');
     const camera=new THREE.PerspectiveCamera(38,1,.1,100);camera.position.set(8,8,10);
     const controls=new OrbitControls(camera,renderer.domElement);
     controls.target.set(0,.6,0);controls.enableDamping=true;controls.minDistance=6;controls.maxDistance=18;controls.maxPolarAngle=Math.PI/2.08;controls.enablePan=false;controls.update();
@@ -64,11 +63,13 @@ export default function RoomPreview({room,focused,online,me,command}:Props) {
     let down={x:0,y:0};const raycaster=new THREE.Raycaster();const pointer=new THREE.Vector2();
     const onDown=(e:PointerEvent)=>{down={x:e.clientX,y:e.clientY};};
     const onUp=(e:PointerEvent)=>{if(Math.hypot(e.clientX-down.x,e.clientY-down.y)>5)return;const rect=renderer.domElement.getBoundingClientRect();pointer.set((e.clientX-rect.left)/rect.width*2-1,-((e.clientY-rect.top)/rect.height)*2+1);raycaster.setFromCamera(pointer,camera);const markerHit=raycaster.intersectObjects(markers.children,true)[0];if(markerHit && !placingRef.current){let object:THREE.Object3D|null=markerHit.object;while(object && !object.userData.productId)object=object.parent;if(object?.userData.productId)selectRef.current(object.userData.productId);return;}const hit=raycaster.intersectObject(floor)[0];if(hit)placeRef.current(hit.point.x,hit.point.z);};
+    const onContextLost=(event:Event)=>{event.preventDefault();setUnavailable(true);};
+    renderer.domElement.addEventListener('webglcontextlost',onContextLost);
     renderer.domElement.addEventListener('pointerdown',onDown);renderer.domElement.addEventListener('pointerup',onUp);
     const resize=()=>{const w=host.clientWidth,h=host.clientHeight;if(!w||!h)return;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();};
     const observer=new ResizeObserver(resize);observer.observe(host);resize();
     let frame=0;const draw=()=>{controls.update();renderer.render(scene,camera);frame=requestAnimationFrame(draw);};draw();
-    return ()=>{cancelAnimationFrame(frame);observer.disconnect();renderer.domElement.removeEventListener('pointerdown',onDown);renderer.domElement.removeEventListener('pointerup',onUp);controls.dispose();scene.traverse(obj=>{if(obj instanceof THREE.Mesh){obj.geometry.dispose();const mats=Array.isArray(obj.material)?obj.material:[obj.material];mats.forEach(m=>m.dispose());}else if(obj instanceof THREE.Sprite){obj.material.map?.dispose();obj.material.dispose();}});renderer.dispose();renderer.domElement.remove();sceneRef.current=null;markersRef.current=null;};
+    return ()=>{cancelAnimationFrame(frame);observer.disconnect();renderer.domElement.removeEventListener('webglcontextlost',onContextLost);renderer.domElement.removeEventListener('pointerdown',onDown);renderer.domElement.removeEventListener('pointerup',onUp);controls.dispose();scene.traverse(obj=>{if(obj instanceof THREE.Mesh){obj.geometry.dispose();const mats=Array.isArray(obj.material)?obj.material:[obj.material];mats.forEach(m=>m.dispose());}else if(obj instanceof THREE.Sprite){obj.material.map?.dispose();obj.material.dispose();}});renderer.dispose();renderer.domElement.remove();markersRef.current=null;};
   },[]);
   useEffect(()=>{
     const markers=markersRef.current;if(!markers)return;
@@ -86,8 +87,8 @@ export default function RoomPreview({room,focused,online,me,command}:Props) {
   return <section className="room-preview" aria-label="Shared 3D room">
     <div className="room-preview-head"><div><span className="section-kicker"><span className="live-pulse"/> YOUR LIVE SPACE</span><h2>See it together<span className="period">.</span></h2><p>Give your ideas a place to land.</p></div><span className="room-live-label">{online?'● LIVE ROOM':'○ RECONNECTING'}</span></div>
     <div className="room-preview-body"><div className="room-canvas-wrap"><div ref={container} className="room-canvas" aria-label="Interactive illustrative 3D room" />
-      {unavailable && <div className="room-canvas-fallback">3D is unavailable in this browser. You can still manage placements below.</div>}
-      <span className="room-canvas-tip"><Rotate3D size={15}/> Drag to orbit · click a marker to react</span>
+      {unavailable && <div className="room-canvas-fallback room-fallback-visual"><svg viewBox="0 0 400 280" role="img" aria-label="Simplified shared room preview" onClick={e=>{if(!placing)return;const svg=e.currentTarget;const matrix=svg.getScreenCTM();if(!matrix)return;const point=svg.createSVGPoint();point.x=e.clientX;point.y=e.clientY;const p=point.matrixTransform(matrix.inverse());const x=((p.x-200)/32+(p.y-155)/16)/2;const z=((p.y-155)/16-(p.x-200)/32)/2;placeRef.current(x,z);}}><path d="M 200 58 L 392 155 L 392 64 L 200 5 Z" fill="#eae5ed"/><path d="M 8 155 L 200 58 L 200 5 L 8 64 Z" fill="#d8d4e0"/><path d="M 200 58 L 392 155 L 200 252 L 8 155 Z" fill="#f4d9b8" stroke="#d3b79d" strokeWidth="3"/><path d="M 248 49 L 313 80 L 313 122 L 248 92 Z" fill="#9fbeec" stroke="#fff" strokeWidth="4"/><path d="M 200 116 L 265 150 L 200 184 L 135 150 Z" fill="#b7befc"/>{placements.map((item,i)=>{const x=200+(item.x-item.z)*32;const y=155+(item.x+item.z)*16;const feedback=Object.values(room.marker_reactions?.[item.product_id]||{}).map((v:any)=>reactionOptions.find(o=>o.key===v)?.emoji||'').join('');return <g key={item.product_id} onClick={e=>{e.stopPropagation();setSelectedMarker(item.product_id);}}><circle cx={x} cy={y} r="16" fill={['#ff724d','#6549eb','#2563eb','#e6a344','#eb6195'][i%5]} stroke="white" strokeWidth="3"/><text x={x} y={y+5} textAnchor="middle" fill="white" fontSize="14" fontWeight="bold">{i+1}</text>{feedback && <text x={x} y={y-22} textAnchor="middle" fontSize="14">{feedback}</text>}</g>;})}</svg><p>Showing a simplified room because 3D graphics are unavailable. Your shared placements still work.</p></div>}
+      <span className="room-canvas-tip"><Rotate3D size={15}/> {unavailable ? "Click a marker to react" : "Drag to orbit · click a marker to react"}</span>
       {placing && <div className="placement-instruction">Tap the floor to place {focused?.name} <button onClick={()=>setPlacing(false)}>Cancel</button><button onClick={()=>placeRef.current(0,0)}>Place in center</button></div>}
     </div><div className="room-preview-panel"><div className="room-panel-title"><span><Box size={16}/> YOUR ROOM</span><span>{placements.length}/20</span></div><h3>Make some space.</h3><p>Choose a product, then place a marker in your room. Everyone sees the same layout.</p>
       <button className="place-product" disabled={!online || !focused} onClick={()=>setPlacing(!placing)}><Plus size={17}/>{placing?'Choose a spot':'Place focused product'}</button>
