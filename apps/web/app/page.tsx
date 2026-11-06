@@ -1,6 +1,7 @@
 "use client";
 import MoveIn from "./MoveIn";
 import RoomPreview from "./RoomPreview";
+import WhyPick from "./WhyPick";
 import RelocationDesk from "./RelocationDesk";
 import { useEffect, useState } from "react";
 import DecisionBoard from "./DecisionBoard";
@@ -472,7 +473,7 @@ export default function Home() {
           </div>
           <main className={"room tab-" + tab}>
             <section id="shop" className="shop-column">
-              {room.mode === "move_in" ? <><MoveIn room={room} online={online} me={me} api={api} /><RoomPreview room={room} focused={p} online={online} command={command} /></> : <Concierge room={room} online={online} />}
+              {room.mode === "move_in" ? <><MoveIn room={room} online={online} me={me} api={api} /><RoomPreview room={room} focused={p} online={online} me={me} command={command} /></> : <Concierge room={room} online={online} />}
               {room.agreed_product && (
                 <div role="status" className="agreement-banner">
                   ✓ We chose{" "}
@@ -599,6 +600,7 @@ export default function Home() {
                   </p>
                 )}
               </article>
+              {p && <WhyPick room={room} product={p} />}
               {p?.provenance === "channel3" && (
                 <ProductDetails product={p} room={room} online={online} />
               )}

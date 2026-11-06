@@ -98,3 +98,22 @@ def test_shared_room_placements_validate_and_sync():
     assert b.post(base+'/commands',json={'kind':'placement_upsert','value':json.dumps({'product_id':'11','x':9,'z':0}),'revision':2,'command_id':'bad'}).status_code==422
     assert b.post(base+'/commands',json={'kind':'placement_remove','value':'11','revision':2,'command_id':'remove'}).status_code==200
     assert a.get(base).json()['room_placements']==[]
+
+def test_marker_reactions_are_independent_validated_and_shared():
+    import json
+    a,b,outsider=TestClient(app),TestClient(app),TestClient(app)
+    created=a.post('/api/rooms',json={'name':'A','mode':'move_in'}).json();base='/api/rooms/'+created['room']['id']
+    assert b.post('/api/join/'+created['invite'],json={'name':'B'}).status_code==200
+    def cmd(client,kind,value,revision,id):return client.post(base+'/commands',json={'kind':kind,'value':json.dumps(value),'revision':revision,'command_id':id})
+    assert cmd(a,'marker_reaction',{'product_id':'11','reaction':'love'},1,'missing').status_code==422
+    assert cmd(a,'placement_upsert',{'product_id':'11','x':0,'z':0},1,'place').status_code==200
+    assert cmd(outsider,'marker_reaction',{'product_id':'11','reaction':'love'},2,'denied').status_code==403
+    assert cmd(a,'marker_reaction',{'product_id':'11','reaction':'bad'},2,'bad').status_code==422
+    assert cmd(a,'marker_reaction',{'product_id':'11','reaction':'love'},2,'love').status_code==200
+    assert cmd(a,'marker_reaction',{'product_id':'11','reaction':'love'},2,'love').status_code==200
+    assert cmd(b,'marker_reaction',{'product_id':'11','reaction':'price'},2,'stale').status_code==409
+    assert cmd(b,'marker_reaction',{'product_id':'11','reaction':'price'},3,'price').status_code==200
+    assert a.get(base).json()['marker_reactions']['11']=={'A':'love','B':'price'}
+    assert cmd(a,'marker_reaction',{'product_id':'11','reaction':'love'},4,'remove').status_code==200
+    assert b.get(base).json()['marker_reactions']['11']=={'B':'price'}
+    assert b.get(base).json().get('agreed_product') is None

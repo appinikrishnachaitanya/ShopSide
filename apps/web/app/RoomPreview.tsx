@@ -5,16 +5,22 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { Box, Move3D, Plus, Rotate3D, Trash2 } from "lucide-react";
 
 type Placement = { product_id:string; name:string; x:number; z:number; updated_by:string };
-type Props = { room:any; focused:any; online:boolean; command:(kind:string,value:string)=>void };
+type Props = { room:any; focused:any; online:boolean; me:any; command:(kind:string,value:string)=>void };
+const reactionOptions=[{key:"love",emoji:"❤️",label:"Love it"},{key:"price",emoji:"💸",label:"Too pricey"},{key:"size",emoji:"📏",label:"Check the size"},{key:"discuss",emoji:"🤔",label:"Let’s discuss"}];
 
-export default function RoomPreview({room,focused,online,command}:Props) {
+export default function RoomPreview({room,focused,online,me,command}:Props) {
   const container=useRef<HTMLDivElement>(null);
   const sceneRef=useRef<THREE.Scene|null>(null);
   const markersRef=useRef<THREE.Group|null>(null);
   const placeRef=useRef<(x:number,z:number)=>void>(()=>{});
+  const selectRef=useRef<(id:string)=>void>(()=>{});
+  const placingRef=useRef(false);
+  const [selectedMarker,setSelectedMarker]=useState<string|null>(null);
   const [placing,setPlacing]=useState(false);
   const [unavailable,setUnavailable]=useState(false);
   const placements:Placement[]=room.room_placements || [];
+  selectRef.current=(id)=>setSelectedMarker(id);
+  placingRef.current=placing;
   placeRef.current=(x,z)=>{
     if (!placing || !online || !focused) return;
     command("placement_upsert",JSON.stringify({product_id:focused.id,x:Math.max(-2.5,Math.min(2.5,Math.round(x*10)/10)),z:Math.max(-2.5,Math.min(2.5,Math.round(z*10)/10))}));
@@ -57,7 +63,7 @@ export default function RoomPreview({room,focused,online,command}:Props) {
     const markers=new THREE.Group();scene.add(markers);markersRef.current=markers;
     let down={x:0,y:0};const raycaster=new THREE.Raycaster();const pointer=new THREE.Vector2();
     const onDown=(e:PointerEvent)=>{down={x:e.clientX,y:e.clientY};};
-    const onUp=(e:PointerEvent)=>{if(Math.hypot(e.clientX-down.x,e.clientY-down.y)>5)return;const rect=renderer.domElement.getBoundingClientRect();pointer.set((e.clientX-rect.left)/rect.width*2-1,-((e.clientY-rect.top)/rect.height)*2+1);raycaster.setFromCamera(pointer,camera);const hit=raycaster.intersectObject(floor)[0];if(hit)placeRef.current(hit.point.x,hit.point.z);};
+    const onUp=(e:PointerEvent)=>{if(Math.hypot(e.clientX-down.x,e.clientY-down.y)>5)return;const rect=renderer.domElement.getBoundingClientRect();pointer.set((e.clientX-rect.left)/rect.width*2-1,-((e.clientY-rect.top)/rect.height)*2+1);raycaster.setFromCamera(pointer,camera);const markerHit=raycaster.intersectObjects(markers.children,true)[0];if(markerHit && !placingRef.current){let object:THREE.Object3D|null=markerHit.object;while(object && !object.userData.productId)object=object.parent;if(object?.userData.productId)selectRef.current(object.userData.productId);return;}const hit=raycaster.intersectObject(floor)[0];if(hit)placeRef.current(hit.point.x,hit.point.z);};
     renderer.domElement.addEventListener('pointerdown',onDown);renderer.domElement.addEventListener('pointerup',onUp);
     const resize=()=>{const w=host.clientWidth,h=host.clientHeight;if(!w||!h)return;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();};
     const observer=new ResizeObserver(resize);observer.observe(host);resize();
@@ -69,24 +75,24 @@ export default function RoomPreview({room,focused,online,command}:Props) {
     while(markers.children.length){const obj=markers.children[0];markers.remove(obj);obj.traverse(child=>{if(child instanceof THREE.Mesh){child.geometry.dispose();(child.material as THREE.Material).dispose();}else if(child instanceof THREE.Sprite){child.material.map?.dispose();child.material.dispose();}});}
     placements.forEach((item,index)=>{
       const color=['#ff724d','#6549eb','#2563eb','#e6a344','#eb6195'][index%5];
-      const group=new THREE.Group();group.position.set(item.x,0,item.z);
+      const group=new THREE.Group();group.userData.productId=item.product_id;group.position.set(item.x,0,item.z);
       const body=new THREE.Mesh(new THREE.BoxGeometry(.62,.56,.62),new THREE.MeshStandardMaterial({color,roughness:.5}));body.position.y=.32;body.castShadow=true;group.add(body);
-      const label=document.createElement('canvas');label.width=96;label.height=96;const ctx=label.getContext('2d');
-      if(ctx){ctx.beginPath();ctx.arc(48,48,43,0,Math.PI*2);ctx.fillStyle='#ffffff';ctx.fill();ctx.fillStyle='#211740';ctx.font='bold 46px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(String(index+1),48,50);const texture=new THREE.CanvasTexture(label);const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:texture,transparent:true}));sprite.position.y=.83;sprite.scale.set(.4,.4,.4);group.add(sprite);}
+      const label=document.createElement('canvas');label.width=192;label.height=96;const ctx=label.getContext('2d');
+      if(ctx){ctx.beginPath();ctx.roundRect(4,7,184,82,40);ctx.fillStyle='#ffffff';ctx.fill();ctx.fillStyle='#211740';ctx.font='bold 34px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';const feedback=Object.values(room.marker_reactions?.[item.product_id] || {}).map((v:any)=>reactionOptions.find(option=>option.key===v)?.emoji || '').join('');ctx.fillText(`${index+1} ${feedback}`,96,50);const texture=new THREE.CanvasTexture(label);const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:texture,transparent:true}));sprite.position.y=.83;sprite.scale.set(.8,.4,.4);group.add(sprite);}
       markers.add(group);
     });
-  },[room.room_placements]);
+  },[room.room_placements,room.marker_reactions]);
   const put=(p:Placement,x:number,z:number)=>command('placement_upsert',JSON.stringify({product_id:p.product_id,x:Math.max(-2.5,Math.min(2.5,Math.round(x*10)/10)),z:Math.max(-2.5,Math.min(2.5,Math.round(z*10)/10))}));
   return <section className="room-preview" aria-label="Shared 3D room">
     <div className="room-preview-head"><div><span className="section-kicker"><span className="live-pulse"/> YOUR LIVE SPACE</span><h2>See it together<span className="period">.</span></h2><p>Give your ideas a place to land.</p></div><span className="room-live-label">{online?'● LIVE ROOM':'○ RECONNECTING'}</span></div>
     <div className="room-preview-body"><div className="room-canvas-wrap"><div ref={container} className="room-canvas" aria-label="Interactive illustrative 3D room" />
       {unavailable && <div className="room-canvas-fallback">3D is unavailable in this browser. You can still manage placements below.</div>}
-      <span className="room-canvas-tip"><Rotate3D size={15}/> Drag to orbit · scroll to zoom</span>
+      <span className="room-canvas-tip"><Rotate3D size={15}/> Drag to orbit · click a marker to react</span>
       {placing && <div className="placement-instruction">Tap the floor to place {focused?.name} <button onClick={()=>setPlacing(false)}>Cancel</button><button onClick={()=>placeRef.current(0,0)}>Place in center</button></div>}
     </div><div className="room-preview-panel"><div className="room-panel-title"><span><Box size={16}/> YOUR ROOM</span><span>{placements.length}/20</span></div><h3>Make some space.</h3><p>Choose a product, then place a marker in your room. Everyone sees the same layout.</p>
       <button className="place-product" disabled={!online || !focused} onClick={()=>setPlacing(!placing)}><Plus size={17}/>{placing?'Choose a spot':'Place focused product'}</button>
       {focused && <small className="focused-product">Focused: {focused.name}</small>}
-      <div className="room-placements">{!placements.length && <p className="room-empty">Nothing here yet. Add your first idea ✳</p>}{placements.map((item,i)=><div className="placement-row" key={item.product_id}><span className="placement-number" style={{background:['#ff724d','#6549eb','#2563eb','#e6a344','#eb6195'][i%5]}}>{i+1}</span><div><strong>{item.name}</strong><small>Placed by {item.updated_by}</small></div><button aria-label={'Remove '+item.name} disabled={!online} onClick={()=>command('placement_remove',item.product_id)}><Trash2 size={14}/></button><div className="placement-move"><span><Move3D size={13}/> Move</span><button aria-label={'Move '+item.name+' left'} disabled={!online} onClick={()=>put(item,item.x-.3,item.z)}>←</button><button aria-label={'Move '+item.name+' right'} disabled={!online} onClick={()=>put(item,item.x+.3,item.z)}>→</button><button aria-label={'Move '+item.name+' back'} disabled={!online} onClick={()=>put(item,item.x,item.z-.3)}>↑</button><button aria-label={'Move '+item.name+' forward'} disabled={!online} onClick={()=>put(item,item.x,item.z+.3)}>↓</button></div></div>)}</div>
+      <div className="room-placements">{!placements.length && <p className="room-empty">Nothing here yet. Add your first idea ✳</p>}{placements.map((item,i)=><div className="placement-row" key={item.product_id}><span className="placement-number" style={{background:['#ff724d','#6549eb','#2563eb','#e6a344','#eb6195'][i%5]}}>{i+1}</span><div><strong>{item.name}</strong><small>Placed by {item.updated_by}</small></div><button aria-label={'Remove '+item.name} disabled={!online} onClick={()=>command('placement_remove',item.product_id)}><Trash2 size={14}/></button><button className="marker-react-toggle" aria-expanded={selectedMarker===item.product_id} aria-label={'React to '+item.name} onClick={()=>setSelectedMarker(selectedMarker===item.product_id?null:item.product_id)}>React {Object.keys(room.marker_reactions?.[item.product_id] || {}).length ? `· ${Object.keys(room.marker_reactions[item.product_id]).length}` : '＋'}</button><div className="marker-reaction-summary">{Object.entries(room.marker_reactions?.[item.product_id] || {}).map(([person,value])=><span key={person}>{person}: {reactionOptions.find(option=>option.key===value)?.emoji} {reactionOptions.find(option=>option.key===value)?.label}</span>)}</div>{selectedMarker===item.product_id && <div className="marker-reaction-options" aria-label={'Reactions for '+item.name}>{reactionOptions.map(option=><button key={option.key} aria-label={`${option.label} for ${item.name}`} aria-pressed={room.marker_reactions?.[item.product_id]?.[me?.name]===option.key} disabled={!online || !me} onClick={()=>command('marker_reaction',JSON.stringify({product_id:item.product_id,reaction:option.key}))}>{option.emoji} {option.label}</button>)}</div>}<div className="placement-move"><span><Move3D size={13}/> Move</span><button aria-label={'Move '+item.name+' left'} disabled={!online} onClick={()=>put(item,item.x-.3,item.z)}>←</button><button aria-label={'Move '+item.name+' right'} disabled={!online} onClick={()=>put(item,item.x+.3,item.z)}>→</button><button aria-label={'Move '+item.name+' back'} disabled={!online} onClick={()=>put(item,item.x,item.z-.3)}>↑</button><button aria-label={'Move '+item.name+' forward'} disabled={!online} onClick={()=>put(item,item.x,item.z+.3)}>↓</button></div></div>)}</div>
       <p className="room-preview-disclaimer">Illustrative markers only — not the product’s real shape, size, or a fit guarantee.</p></div></div>
   </section>;
 }
