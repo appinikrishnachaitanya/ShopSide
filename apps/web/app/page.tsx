@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { sessionFetch, sessionSocket, startInviteSession } from "./lib/session";
 import DecisionBoard from "./DecisionBoard";
 import CartQuantity from "./CartQuantity";
+import WelcomeIllustration from "./WelcomeIllustration";
 import Recommendations from "./Recommendations";
 import Concierge from "./Concierge";
 import ProductDetails from "./ProductDetails";
@@ -522,7 +523,7 @@ export default function Home() {
               <div className="welcome-tag">
                 <span /> A little closer, even from afar
               </div>
-              {invite ? <><h1>You’re invited<span className="period">.</span><br /><em>Come on in.</em></h1><p>Pick a name and join the shared room. Everything your friend has already planned will be there.</p></> : <><h1>Shopping is<br /><em>better together.</em></h1><p>One room. Any shopping goal. Discover, compare and decide with your people and ShopSide AI.</p></>}
+              {invite ? <><h1>You’re invited<span className="period">.</span><br /><em>Come on in.</em></h1><p>Pick a name and join the shared room. Everything your friend has already planned will be there.</p></> : <><h1>Shopping is<br /><em>better together.</em></h1><p>One shared room for any shopping goal. Explore real products, compare with AI, and choose with your people.</p></>}
               <form
                 className="welcome-form"
                 onSubmit={(e) => {
@@ -545,7 +546,7 @@ export default function Home() {
                 <div className="inspiration" aria-label="Shopping inspiration"><span>Need inspiration?</span>{[["Furnish my apartment", "We’re moving into a new apartment and need to furnish it together."], ["Build my workspace", "We need a desk and chair for our workspace."], ["Find the perfect gift", "Help us find a gift together."], ["Compare products", "Help us compare products and choose together."]].map(([label, goal]) => <button key={label} type="button" onClick={() => setShoppingRequest(goal)}>{label}</button>)}</div>
                 </>}
                 <label htmlFor="welcome-name">WHAT SHOULD WE CALL YOU?</label>
-                <div>
+                <div className="welcome-name-row">
                   <input
                     id="welcome-name"
                     aria-label="Your name"
@@ -572,37 +573,7 @@ export default function Home() {
                 </span>
               </div>
             </div>
-            <div className="welcome-art is-move-in">
-              <div className="welcome-art-glow" />
-              <div className="welcome-art-top">
-                <span>THE TOGETHER EDIT</span>
-                <span>01 / 08</span>
-              </div>
-              <img
-                src="/products/next-chapter.webp"
-                alt="Illustrative space for shopping together"
-              />
-              <div className="welcome-art-bottom">
-                <div>
-                  <span>MADE FOR SHARED MOMENTS</span>
-                  <strong>
-                    One room,
-                    <br />
-                    endless possibilities.
-                  </strong>
-                </div>
-                <span className="art-arrow">
-                  <ArrowUpRight size={22} />
-                </span>
-              </div>
-              <div className="floating-note">
-                <Heart size={16} fill="currentColor" />
-                <span>
-                  <strong>Better together</strong>
-                  <small>Decide together, from anywhere.</small>
-                </span>
-              </div>
-            </div>
+            <WelcomeIllustration />
           </div>
           <div className="welcome-footer">
             <span>✳ &nbsp; A BETTER WAY TO SHOP TOGETHER</span>
