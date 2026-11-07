@@ -23,9 +23,12 @@ def setup(monkeypatch):
         put(main.db,'merchants',mid,m)
         token='test-'+uuid.uuid4().hex
         main.db.execute('INSERT INTO merchant_users VALUES(?,?,?)',(identity(token),mid,'Operator'))
-        mapping={'merchant_id':mid,'product_id':'channel3:desk-1','domain':'sandbox.example','category':TEST_CATEGORY,'status':'current',
-                 'observed':{'name':'Studio desk','price_cents':15000+index*10,'currency':'USD','availability':'InStock','retrieved_at':int(time.time()),'url':'https://sandbox.example/desk'}}
-        main.db.execute('INSERT INTO merchant_products VALUES(?,?,?)',(mid,'channel3:desk-1',json.dumps(mapping)))
+        mapping={'merchant_id':mid,'product_id':'shopside:desk-1','source':'SHOPSIDE_SANDBOX','sku':'desk-1',
+                 'title':'Studio desk','category':TEST_CATEGORY,'price_cents':15000+index*10,'currency':'USD',
+                 'stock_quantity':8,'active':True,'status':'current',
+                 'observed':{'name':'Studio desk','price_cents':15000+index*10,'currency':'USD','availability':'InStock','retrieved_at':int(time.time()),'url':None}}
+        main.db.execute('INSERT INTO merchant_products VALUES(?,?,?)',(mid,'shopside:desk-1',json.dumps(mapping)))
+        main.db.execute('INSERT INTO merchant_inventory VALUES(?,?,?,?)',(mid,'shopside:desk-1',8,0))
         main.db.commit();ids.append((mid,token))
     return ids
 
@@ -91,28 +94,23 @@ def test_durable_automatic_job_and_room_fanout(monkeypatch):
     ids=setup(monkeypatch);buyer,_,rid=room();base='/api/rooms/'+rid
     m=merchant(main.db,ids[0][0]);m['mode']='automatic';put(main.db,'merchants',ids[0][0],m)
     async def fake_agent(_merchant,_opportunity,_products,_market):
-        return OfferProposal(product_id='channel3:desk-1',price_cents=14000,explanation='A desk within your budget.'),{'model_calls':1,'tools':['get_merchant_policy','get_eligible_products','get_market_price_context','get_buyer_opportunity'],'outcome':'proposed'}
+        return OfferProposal(product_id='shopside:desk-1',price_cents=14000,explanation='A desk within your budget.'),{'model_calls':1,'tools':['get_merchant_policy','get_eligible_products','get_market_price_context','get_buyer_opportunity'],'outcome':'proposed'}
     monkeypatch.setattr(main.merchant_service,'propose',fake_agent)
     monkeypatch.setenv('MERCHANT_JOB_TOKEN','scheduler-test-secret')
     with buyer.websocket_connect(base+'/live',headers={'origin':'http://localhost:3000'}) as ws:
         ws.receive_json()
         buyer.post(base+'/seller-offers/consent',json={'enabled':True,'command_id':'consent-job'});ws.receive_json()
-        matched=buyer.post(base+'/seller-offers/request').json();assert matched['opportunity_count']==3,matched;ws.receive_json()
-        response=TestClient(main.app).post('/api/internal/merchant-jobs/process',headers={'x-merchant-job-token':'scheduler-test-secret'})
-        assert response.status_code==200
-        assert any(r['status']=='published' for r in response.json()['results']), response.json()
-        for _ in range(5):
-            message=ws.receive_json()
-            if message.get('flash_offers'):break
+        matched=buyer.post(base+'/seller-offers/request').json();assert matched['opportunity_count']==3,matched
+        # Local task fallback runs immediately after the request and fans the offer out.
+        message=ws.receive_json()
+        if not message.get('flash_offers'):message=ws.receive_json()
         assert message['flash_offers'][0]['merchant_id']==ids[0][0]
-        op=TestClient(main.app).get('/api/merchant/me',headers={'Authorization':'Bearer '+ids[0][1]}).json()['opportunities'][0]
-        assert op['agent_trace']['tools'][0]=='get_merchant_policy'
+    op=TestClient(main.app).get('/api/merchant/me',headers={'Authorization':'Bearer '+ids[0][1]}).json()['opportunities'][0]
+    assert op['agent_trace']['tools'][0]=='get_merchant_policy'
     second=TestClient(main.app).post('/api/internal/merchant-jobs/process',headers={'x-merchant-job-token':'scheduler-test-secret'})
     assert not any(r['id']==op['id'] for r in second.json()['results'])
     first_quote=buyer.get(base).json()['flash_offers'][0]
     assert buyer.post(base+'/seller-offers/action',json={'action':'counter','offer_id':first_quote['id'],'price_cents':13000,'command_id':'counter-auto'}).status_code==200
-    next_run=TestClient(main.app).post('/api/internal/merchant-jobs/process',headers={'x-merchant-job-token':'scheduler-test-secret'})
-    assert any(r['status']=='published' for r in next_run.json()['results'])
     quotes=buyer.get(base).json()['flash_offers']
     assert len(quotes)==2 and quotes[0]['status']=='CANCELLED' and quotes[1]['status']=='OFFER_PUBLISHED'
     history=TestClient(main.app).get('/api/merchant/me',headers={'Authorization':'Bearer '+ids[0][1]}).json()['opportunities'][0]['agent_traces']
@@ -138,3 +136,37 @@ def test_real_quote_expiry_and_product_ownership(monkeypatch):
     response=buyer.post(base+'/seller-offers/action',json={'action':'accept','offer_id':good['id'],'command_id':'accept-expired'})
     assert response.status_code==409
     assert buyer.get(base).json()['flash_offers'][0]['status']=='EXPIRED'
+
+def test_budget_edit_revokes_old_seller_demand(monkeypatch):
+    ids=setup(monkeypatch);buyer,friend,rid=room();base='/api/rooms/'+rid
+    buyer.post(base+'/seller-offers/consent',json={'enabled':True,'command_id':'consent-budget-change'})
+    assert buyer.post(base+'/seller-offers/request').json()['opportunity_count']==3
+    before=buyer.get(base).json();old_key=before['seller_offers']['demand_key']
+    result=buyer.post(base+'/plan/budget',json={'amount_cents':25000,'currency':'USD','revision':before['revision'],'command_id':'budget-change'})
+    assert result.status_code==200
+    after=friend.get(base).json()
+    assert after['seller_offers']['demand_key']!=old_key and after['seller_offers']['match_count']==0
+    assert after['budget']==25000
+    first=TestClient(main.app).get('/api/merchant/me',headers={'Authorization':'Bearer '+ids[0][1]}).json()['opportunities'][0]
+    assert first['status']=='CANCELLED'
+    assert buyer.post(base+'/seller-offers/request').json()['opportunity_count']==3
+
+
+def test_failed_merchant_ai_job_is_durable_and_bounded(monkeypatch):
+    ids=setup(monkeypatch);buyer,_,rid=room();base='/api/rooms/'+rid
+    m=merchant(main.db,ids[0][0]);m['mode']='automatic';put(main.db,'merchants',ids[0][0],m)
+    async def unavailable(*_args):raise RuntimeError('model unavailable')
+    monkeypatch.setattr(main.merchant_service,'propose',unavailable)
+    monkeypatch.setenv('MERCHANT_JOB_TOKEN','job-retry-test')
+    buyer.post(base+'/seller-offers/consent',json={'enabled':True,'command_id':'consent-retry-test'})
+    assert buyer.post(base+'/seller-offers/request').json()['opportunity_count']==3
+    op=TestClient(main.app).get('/api/merchant/me',headers={'Authorization':'Bearer '+ids[0][1]}).json()['opportunities'][0]
+    for attempt in (2,3):
+        job=main.merchant_service.read(main.db.execute('SELECT state FROM merchant_jobs WHERE id=?',(op['id'],)).fetchone())
+        assert job['status']=='pending' and job['attempts']==attempt-1
+        job['next_at']=main.merchant_service.now()-1
+        main.merchant_service.put(main.db,'merchant_jobs',job['id'],job)
+        response=TestClient(main.app).post('/api/internal/merchant-jobs/process',headers={'x-merchant-job-token':'job-retry-test'})
+        assert response.status_code==200
+    final=main.merchant_service.read(main.db.execute('SELECT state FROM merchant_jobs WHERE id=?',(op['id'],)).fetchone())
+    assert final['status']=='failed' and final['attempts']==3

@@ -2,6 +2,7 @@ import {test,expect} from '@playwright/test';
 
 // Runs against the dedicated test API with mocked Gemini and Channel3.
 test('two shoppers select, swap, save and approve the same bundle',async({browser})=>{
+ test.skip(process.env.SHOPSIDE_FIXTURE_API !== 'true','Requires the deterministic Gemini and Channel3 fixture API');
  const base=process.env.SHOPSIDE_TEST_URL || 'http://localhost:3000';
  const a=await browser.newContext(),b=await browser.newContext();const first=await a.newPage(),second=await b.newPage();
  await first.goto(base);await first.getByLabel('Your name').fill('Alex');await first.getByLabel('What are you shopping for today?').fill('Desk and ergonomic chair under $300');await first.getByRole('button',{name:'Create your shopping room'}).click();

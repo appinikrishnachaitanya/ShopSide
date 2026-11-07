@@ -11,7 +11,8 @@ test("desktop and mobile share persisted room", async ({ browser }) => {
   const view = async (page: any, name: string) => {
     const close = page.locator("dialog[open] .workspace-dialog-header button");
     if (await close.count()) await close.click();
-    if (name !== "Discover") await page.getByRole("button", { name: new RegExp("^" + (name === "Spotlight" ? "View selected" : name)) }).first().click();
+    if (name === "Compare") { await page.getByRole("button", {name:"View plan"}).click(); await page.getByRole("button", {name:"Compare saved products"}).click(); }
+    else if (name !== "Discover") await page.getByRole("button", { name: new RegExp("^" + (name === "Spotlight" ? "View selected" : name)) }).first().click();
   };
   await first.goto(testBase);
   await first.getByLabel("Your name").fill("Krishna");
@@ -52,8 +53,10 @@ test("desktop and mobile share persisted room", async ({ browser }) => {
   await first
     .getByRole("button", { name: "Save to Together", exact: true })
     .click();
-  await view(second, "Compare");
-  await expect(second.getByText("1 saved to your shortlist")).toBeVisible();
+  await second.getByRole("button", {name:"Close Product details"}).click();
+  await second.getByRole("button", {name:"View plan"}).click();
+  await expect(second.getByText("product saved to compare")).toBeVisible();
+  await second.getByRole("button", {name:"Close Our plan"}).click();
   await view(second, "Discover");
   await second
     .getByRole("button", { name: /Sunday Studio.*Look at this/ })
@@ -64,7 +67,6 @@ test("desktop and mobile share persisted room", async ({ browser }) => {
     .click();
   await view(first, "Compare");
   await expect(first.getByText("2 saved to your shortlist")).toBeVisible();
-  await first.getByRole("button", { name: "Compare picks" }).click();
   await view(second, "Compare");
   await expect(
     first.locator(".board").getByText("Sunday Studio", { exact: true }),

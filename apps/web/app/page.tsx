@@ -12,6 +12,7 @@ import Concierge from "./Concierge";
 import ProductDetails from "./ProductDetails";
 import WorkspaceOverlay from "./WorkspaceOverlay";
 import SmartBundle from "./SmartBundle";
+import PlanOverview from "./PlanOverview";
 import SellerOffers from "./SellerOffers";
 import AssistantMessage from "./AssistantMessage";
 import {
@@ -617,15 +618,14 @@ export default function Home() {
                 <div className="workspace-summary-actions">
                   <button type="button" onClick={()=>setWorkspaceView("plan")}>View plan</button>
                   <button type="button" onClick={()=>setWorkspaceView("room")}>Open our room</button>
-                  <button type="button" onClick={()=>setWorkspaceView("together")}>Compare {room.shortlist.length > 0 && `(${room.shortlist.length})`}</button>
                   {p && <button type="button" onClick={()=>setWorkspaceView("product")}>View selected</button>}
                 </div>
               </div>
               <div className="workspace-panel" aria-label="Discover products">
               {initialMissionLoading && <p role="status">Understanding your shopping goal…</p>}
               {room.shopping_intent?.shopping_goal && <div className="bundle-panel"><strong>Your shopping goal</strong><p>{room.shopping_intent.shopping_goal}</p>{room.shopping_intent.follow_up && <p>{room.shopping_intent.follow_up}</p>}</div>}
-              <SmartBundle room={room} me={me} online={online} selectProduct={focusProduct} />
-              <SellerOffers room={room} me={me} />
+              <SmartBundle room={room} me={me} online={online} selectProduct={focusProduct} openPlan={()=>setWorkspaceView("plan")} />
+              <SellerOffers room={room} me={me} onCheckout={async offer=>{try{const payment=await api(`rooms/${room.id}/seller-offers/${offer.id}/checkout`,{});V(payment);openCart();E("")}catch(e:any){E(e.message)}}} />
               <div className="discovery">
                 <div className="section-heading">
                   <div>
@@ -998,8 +998,8 @@ export default function Home() {
               )}
               </div>
               <div className="workspace-panel" hidden={workspaceView!=="plan"} aria-label="Shopping plan">
-                {room.smart_bundle?.saved && <section className="saved-bundle"><h3>Saved bundle</h3><p>{room.smart_bundle.saved.items.map((item:any)=>item.product.name).join(" + ")}</p><strong>{room.smart_bundle.saved.currency} {(room.smart_bundle.saved.subtotal_cents/100).toFixed(2)} observed · {room.smart_bundle.saved.currency} {(room.smart_bundle.saved.remaining_cents/100).toFixed(2)} remaining</strong><p>Saved retailer offers are snapshots; verify current prices, shipping and availability.</p>{room.smart_bundle.saved.items.map((item:any)=><a key={item.slot_id} href={item.offer.url} target="_blank" rel="noopener noreferrer">{item.product.name} · {item.offer.retailer} ↗</a>)}</section>}
-                {room.mode === "move_in" ? <><MoveIn room={room} online={online} me={me} api={api} initialLoading={initialMissionLoading} onResults={()=>setWorkspaceView("discover")} /><MemoryReceipt room={room} online={online} /></> : <><Concierge room={room} online={online} /><button type="button" disabled={!online} onClick={async()=>{try{await api("rooms/"+room.id+"/home-plan",{});E("");}catch(e:any){E(e.message);}}}>Set up home planning</button></>}
+                <PlanOverview room={room} me={me} online={online} products={all} api={api} onState={fresh=>S((current:any)=>!current || fresh.revision>=current.revision?fresh:current)} onDiscover={()=>setWorkspaceView("discover")} onRoom={()=>setWorkspaceView("room")} toggleShortlist={id=>command("shortlist",id)} onCompare={async()=>{try{if(room.comparison?.join(",")!==room.shortlist.join(","))await api("rooms/"+room.id+"/commands",{kind:"compare",value:room.shortlist.join(","),revision:room.revision,command_id:crypto.randomUUID()});setWorkspaceView("together");E("")}catch(e:any){E(e.message)}}} />
+                {room.mode === "move_in" ? <details className="plan-more"><summary>Move-in planning details</summary><MoveIn room={room} online={online} me={me} api={api} initialLoading={initialMissionLoading} onResults={()=>setWorkspaceView("discover")} /><MemoryReceipt room={room} online={online} /></details> : <details className="plan-more"><summary>Refine shopping goal with AI</summary><Concierge room={room} online={online} /><button type="button" disabled={!online} onClick={async()=>{try{await api("rooms/"+room.id+"/home-plan",{});E("");}catch(e:any){E(e.message);}}}>Add move-in planning</button></details>}
               </div>
               <div className="workspace-panel" hidden={workspaceView!=="room"} aria-label="Room view">
                 {workspaceView==="room" && <RoomPreview room={room} focused={p} online={online} me={me} command={command} />}
@@ -1019,24 +1019,13 @@ export default function Home() {
                       : "The good stuff goes here. Save a few favorites to get started."}
                   </p>
                 </div>
-                <button
-                  className="outline-button"
-                  disabled={
-                    !online ||
-                    room.shortlist.length < 2 ||
-                    room.shortlist.length > 3
-                  }
-                  onClick={() => command("compare", room.shortlist.join(","))}
-                >
-                  Compare picks <ArrowUpRight size={15} />
-                </button>
               </div>
               <Recommendations
                 room={room}
                 products={all}
                 select={focusProduct}
               />
-              <DecisionBoard room={room} products={all} command={command} />
+              <DecisionBoard room={room} products={all} />
               </div>
               </WorkspaceOverlay>
             </section>
@@ -1156,26 +1145,6 @@ export default function Home() {
                   <span>＋</span>
                 </summary>
                 <div>
-                  <label>CONFIRMED BUDGET</label>
-                  <input
-                    disabled={!online || !me?.is_payer}
-                    aria-label="Budget USD"
-                    type="number"
-                    min="0"
-                    placeholder="Set your budget in USD"
-                    onBlur={(e) => {
-                      if (e.target.value)
-                        command(
-                          "budget",
-                          String(Math.round(Number(e.target.value) * 100)),
-                        );
-                    }}
-                  />
-                  <p>
-                    {room.budget
-                      ? "$" + (room.budget / 100).toFixed(2)
-                      : "No budget confirmed"}
-                  </p>
                   <label>WHAT MATTERS TO YOU?</label>
                   <input
                     aria-label="Your shopping preference"
@@ -1320,9 +1289,9 @@ export default function Home() {
                   </button>
                   {quote && (
                     <section className="quote">
-                      <h3>Sandbox quote</h3>
+                      <h3>{quote.merchant_id?"Merchant offer checkout":"Sandbox quote"}</h3>
                       <p>
-                        ShopSide merchant · PayPal sandbox · No goods shipped
+                        {quote.merchant_name?quote.merchant_name+" · ":"ShopSide merchant · "}PayPal sandbox · No goods shipped
                       </p>
                       {quote.items?.map((item: any) => (
                         <p key={item.product + item.variant}>
@@ -1335,6 +1304,8 @@ export default function Home() {
                       <strong>
                         Total ${(quote.total / 100).toFixed(2)} USD
                       </strong>
+                      {quote.reference_total!=null&&<p>Original ${(quote.reference_total/100).toFixed(2)} · Savings ${((quote.reference_total-quote.total)/100).toFixed(2)}</p>}
+                      {room.checkout?.status==="paid"&&quote.merchant_id&&<div className="order-receipt"><span>ORDER COMPLETED · PAYPAL SANDBOX</span><h4>Chosen together. Paid in sandbox.</h4><p>{quote.merchant_name} · {quote.items?.map((item:any)=>`${item.name} × ${item.quantity}`).join(" + ")}</p><strong>ShopSide order {room.checkout.order_id||quote.id}</strong><small>PayPal capture {room.checkout.paypal_capture_id||quote.capture} · ${((quote.total||0)/100).toFixed(2)} USD · No goods shipped</small></div>}
                       {orderRef && <p className="order-reference">Sandbox order: <strong>{orderRef}</strong> · {room.checkout?.status === "paid" ? "payment verified" : "awaiting PayPal approval"}</p>}
                       <button disabled={paymentBusy || paypalReady || room.checkout?.status === "paid"} onClick={() => pay("create")}>
                         {paymentBusy ? "Preparing PayPal…" : paypalReady ? "Approve with PayPal below" : "Create PayPal sandbox order"}
@@ -1351,7 +1322,7 @@ export default function Home() {
                   {room.checkout && (
                     <p role="status">
                       {room.checkout.status === "paid"
-                        ? "PayPal sandbox payment verified."
+                        ? `Order completed · ${room.checkout.order_id || room.checkout.id} · PayPal Sandbox capture ${room.checkout.paypal_capture_id || "verified"}`
                         : "Checkout: " + room.checkout.status}
                     </p>
                   )}

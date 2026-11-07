@@ -48,11 +48,12 @@ async def propose(merchant, opportunity, products, market):
         agent=Agent(name='merchant_sales_agent',model=Gemini(model=os.environ['GEMINI_MODEL'],client=client),
             instruction=('You represent exactly one opted-in sandbox merchant. Call the four read-only tools before proposing. '
             'Use only eligible product IDs and observed prices. Market prices are not merchant costs. '
+            'For a multi-product request, price_cents is the combined total for every required product_id, and product_id is the first requested ID. '
             'Propose one fair offer in integer cents, considering a buyer counteroffer if present. Do not invent stock, authority or discounts. '
             'Flag any price outside approved automated limits for human review. Do not message buyers or take payments.'),
             tools=[get_merchant_policy,get_eligible_products,get_market_price_context,get_buyer_opportunity],
             output_schema=OfferProposal,before_model_callback=before_model,
-            generate_content_config=types.GenerateContentConfig(max_output_tokens=700))
+            generate_content_config=types.GenerateContentConfig(max_output_tokens=700,temperature=0.2))
         runner=InMemoryRunner(agent=agent,app_name='shopside_merchant')
         session=await runner.session_service.create_session(app_name='shopside_merchant',user_id=merchant['id'])
         answer=[]

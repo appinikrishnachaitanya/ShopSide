@@ -2,11 +2,11 @@
 import { useState } from "react";
 import { sessionFetch } from "./lib/session";
 
-type Props = { room: any; me: any; online: boolean; selectProduct: (id: string) => void };
+type Props = { room: any; me: any; online: boolean; selectProduct: (id: string) => void; openPlan: () => void };
 const labels: Record<string,string> = {best_match:'Best match',budget_saver:'Budget saver',one_seller:'One seller',alternative:'Another option',custom:'Your bundle'};
 const money = (cents: number, currency: string) => `${currency} ${(cents / 100).toFixed(2)}`;
 
-export default function SmartBundle({room,me,online,selectProduct}:Props) {
+export default function SmartBundle({room,me,online,selectProduct,openPlan}:Props) {
   const [working,setWorking]=useState(false),[error,setError]=useState(''),[amount,setAmount]=useState(''),[alternatives,setAlternatives]=useState<any>(null);
   const intent=room.shopping_intent, bundle=room.smart_bundle || {}, selected=bundle.selected;
   if (!intent?.bundle_requested || (intent.product_requirements || []).length < 2) return null;
@@ -34,7 +34,7 @@ export default function SmartBundle({room,me,online,selectProduct}:Props) {
   }
   const agreed = selected && room.people.length >= 2 && room.people.every((name:string)=>bundle.approvals?.[name]===bundle.version);
   return <section className="smart-bundle" aria-label="Smart Bundle">
-    <div className="smart-bundle-heading"><div><span className="section-kicker">SHOP TOGETHER · SMART BUNDLE</span><h2>Your bundle matches</h2><p>{intent.shopping_goal || 'Your shared shopping goal'} · {(intent.product_requirements || []).join(' + ')}</p></div>{budget!=null && currency && <strong>{money(budget,currency)} budget</strong>}</div>
+    <div className="smart-bundle-heading"><div><span className="section-kicker">SHOP TOGETHER · SMART BUNDLE</span><h2>Your bundle matches</h2><p>{intent.shopping_goal || 'Your shared shopping goal'} · {(intent.product_requirements || []).join(' + ')}</p></div>{budget!=null && currency && <div className="bundle-heading-budget"><strong>{money(budget,currency)} budget</strong><button type="button" onClick={openPlan}>Edit budget</button></div>}</div>
     <p className="bundle-caveat">Retailer prices are observed, not guaranteed. Check shipping, tax, availability and compatibility with each retailer.</p>
     <p className="bundle-caveat">AI match is an uncalibrated model assessment. Evidence describes the completeness of returned product and retailer data, not a guarantee.</p>
     {(budget==null || !currency) && <div className="bundle-budget"><label>Set a total budget (USD)<input aria-label="Total bundle budget" type="number" min="0" step="0.01" value={amount} onChange={e=>setAmount(e.target.value)} /></label><button disabled={!online || working || !me?.is_payer || !amount || !Number.isFinite(Number(amount)) || Number(amount)<0} onClick={()=>perform('budget',{amount_cents:Math.round(Number(amount)*100),currency:'USD',expected_version:bundle.version || 0,command_id:crypto.randomUUID()})}>Save budget</button>{!me?.is_payer && <small>{room.payer} can set the budget.</small>}</div>}
@@ -42,7 +42,7 @@ export default function SmartBundle({room,me,online,selectProduct}:Props) {
     {progress && <p role="status">{progress.phase === 'comparing' ? 'Comparing retailer offers and building combinations…' : progress.phase === 'ready' ? 'Preparing and verifying recommendations…' : `Finding products: ${progress.completed.length} of ${progress.requirements.length} searches completed${progress.completed.length ? ` · ${progress.completed.join(', ')}` : '…'}`}</p>}
     {bundle.agent_activity && <details className="bundle-agent-activity"><summary>Agent activity · {bundle.agent_activity.status}</summary><p>{bundle.agent_activity.search_count != null ? `${bundle.agent_activity.search_count} searches · ${bundle.agent_activity.candidate_count} candidates · ${bundle.agent_activity.bundle_count} bundles · ${bundle.agent_activity.elapsed_ms} ms` : 'Working with verified tool results.'}</p>{(bundle.agent_activity.tools || []).map((entry:any,index:number)=><small key={index}>{entry.tool} · {entry.outcome}{entry.elapsed_ms != null ? ` · ${entry.elapsed_ms} ms` : ''}</small>)}</details>}
     <button className="bundle-search-button" disabled={!online || working || !!progress || budget==null || !currency} onClick={()=>perform('search',{command_id:crypto.randomUUID()})}>{working || progress ? 'Finding combinations…' : 'Find bundles'}</button>
-    {Array.isArray(bundle.options) && !bundle.options.length && !progress && <p>No complete combinations were found within this budget. Try another budget or search.</p>}
+    {Array.isArray(bundle.options) && !bundle.options.length && !progress && bundle.searched_budget_cents===budget && <div className="bundle-empty"><strong>No complete bundle fits {budget!=null&&currency?money(budget,currency):"this budget"} yet.</strong><p>Some observed product prices may exceed your total. Review the budget in your shared plan, or explore other products.</p><button type="button" onClick={openPlan}>Review budget in plan →</button></div>}
     {Array.isArray(bundle.options) && bundle.options.length>0 && !bundle.one_seller_available && <p>No single-seller combination found.</p>}
     <div className="bundle-cards">{(bundle.options || []).map((option:any)=><article key={option.id} className={'bundle-card'+(selected?.id===option.id?' selected':'')}>
       <span className="bundle-kind">{labels[option.kind] || option.kind}{option.also_qualifies?.length ? ` · Also ${option.also_qualifies.map((kind:string)=>labels[kind] || kind).join(' · ')}` : ''}</span><div className="bundle-thumbnails">{option.items.map((item:any)=><div key={item.slot_id}>{item.product.image && <img src={item.product.image} alt=""/>}<strong>{item.product.name}</strong><small>{money(item.offer.price_cents,option.currency)} · {item.offer.retailer}</small></div>)}</div>

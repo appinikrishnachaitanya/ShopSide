@@ -10,7 +10,7 @@ test('assistant text is readable and comparison shows sourced product facts', as
         { id:'channel3:sofa1', provider_id:'sofa1', name:'Compact Sofa', provenance:'channel3', retrieved_at:1, offers:[{retailer:'shop.example',url:'https://shop.example/sofa',currency:'USD',price_cents:50000}], attributes:{} },
         { id:'channel3:sofa2', provider_id:'sofa2', name:'Loveseat', provenance:'channel3', retrieved_at:1, offers:[{retailer:'shop.example',url:'https://shop.example/love',currency:'USD',price_cents:45000}], attributes:{} },
       ];
-      room.discovery = products; room.comparison = products.map(p => p.id); room.focus = products[0].id;
+      room.discovery = products; room.comparison = products.map(p => p.id); room.shortlist = products.map(p => p.id); room.focus = products[0].id;
       room.messages = [{actor:'ShopSide',text:'**Best choice:** channel3:sofa1. Compare with channel3:missing.'}];
       socket.send(JSON.stringify(room));
     });
@@ -28,7 +28,8 @@ test('assistant text is readable and comparison shows sourced product facts', as
   await expect(message).toContainText('Compact Sofa');
   await expect(message).toContainText('this product');
   await expect(message).not.toContainText('channel3:');
-  await page.getByRole('button',{name:'Compare',exact:true}).click();
+  await page.getByRole('button',{name:'View plan'}).click();
+  await page.getByRole('button',{name:'Compare saved products'}).click();
   const grid = page.locator('.board');
   await expect(grid.getByText('Linen').first()).toBeVisible();
   await expect(grid.getByText('Ships in 5 days').first()).toBeVisible();

@@ -5,7 +5,7 @@ test('live ADK and Channel3 bundle can be shared, swapped, and approved',async({
  test.setTimeout(150000);
  const base=process.env.SHOPSIDE_TEST_URL || 'http://localhost:3000';
  const a=await browser.newContext(),b=await browser.newContext();const first=await a.newPage(),second=await b.newPage();
- await first.goto(base);await first.getByLabel('Your name').fill('Alex');await first.getByLabel('What are you shopping for today?').fill('Desk and ergonomic chair under $300');await first.getByRole('button',{name:'Create your shopping room'}).click();
+ await first.goto(base);await first.getByLabel('Your name').fill('Alex');await first.getByLabel('What are you shopping for today?').fill('Desk and ergonomic chair under $1,200');await first.getByRole('button',{name:'Create your shopping room'}).click();
  const bundle=first.getByLabel('Smart Bundle');await expect(bundle).toBeVisible({timeout:60000});await bundle.getByRole('button',{name:'Find bundles'}).click();
  await expect(bundle.getByRole('button',{name:'Choose bundle'}).first()).toBeVisible({timeout:60000});await bundle.getByRole('button',{name:'Choose bundle'}).first().click();
  const id=new URL(first.url()).searchParams.get('room');const before=await(await first.request.get(base+'/api/rooms/'+id)).json();
@@ -19,6 +19,6 @@ test('live ADK and Channel3 bundle can be shared, swapped, and approved',async({
  const row=peer.locator('.bundle-alternative').filter({hasText:different.product.name}).filter({hasText:different.offer.retailer}).first();await row.getByRole('button',{name:'Use this'}).click();
  await expect(first.locator('.bundle-item').filter({hasText:different.product.name})).toBeVisible();
  await bundle.getByRole('button',{name:'Approve bundle'}).click();await peer.getByRole('button',{name:'Approve bundle'}).click();await expect(bundle.getByText('Everyone approved this bundle')).toBeVisible();
- await bundle.getByRole('button',{name:'Save to shared plan'}).click();await first.getByRole('button',{name:'View plan'}).click();await expect(first.getByText('Saved bundle')).toBeVisible();
+ await bundle.getByRole('button',{name:'Save to shared plan'}).click();await first.getByRole('button',{name:'View plan'}).click();await expect(first.locator('.plan-saves').getByText('SAVED BUNDLE',{exact:true})).toBeVisible();
  await a.close();await b.close();
 });

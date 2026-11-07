@@ -161,3 +161,37 @@ def test_same_best_and_cheapest_adds_distinct_product_option():
     assert alternative['id']!=primary['id']
     assert any(a['product']['id']!=b['product']['id'] for a,b in zip(primary['items'],alternative['items']))
     assert alternative['subtotal_cents']<=30000
+
+def test_budget_can_be_raised_after_empty_results_and_search_succeeds(monkeypatch,mock_bundle_runner):
+    owner,friend=TestClient(main.app),TestClient(main.app)
+    created=owner.post('/api/rooms',json={'name':'Alex','initial_request':'Desk and chair under $300'}).json();rid=created['room']['id'];base='/api/rooms/'+rid
+    friend.post('/api/join/'+created['invite'],json={'name':'Sam'})
+    state=main.load(rid);state['shopping_intent']={'shopping_goal':'workspace','product_requirements':['desk','chair'],'budget_cents':30000,'currency':'USD','bundle_requested':True};main.save(rid,state)
+    monkeypatch.setattr(main,'search_products',lambda term,_max=None:[product('desk',45000)] if term=='desk' else [product('chair',20000)])
+    assert owner.post(base+'/bundle/search').status_code==200
+    empty=owner.get(base).json();assert empty['smart_bundle']['options']==[] and empty['smart_bundle']['searched_budget_cents']==30000
+    request={'amount_cents':120000,'currency':'USD','revision':empty['revision'],'command_id':'increase-budget'}
+    assert friend.post(base+'/plan/budget',json=request).status_code==403
+    updated=owner.post(base+'/plan/budget',json=request);assert updated.status_code==200
+    assert owner.post(base+'/plan/budget',json=request).status_code==200
+    state=friend.get(base).json();assert state['budget']==120000 and state['shopping_intent']['budget_cents']==120000
+    assert state['smart_bundle']['options']==[] and state['smart_bundle']['searched_budget_cents'] is None
+    assert owner.post(base+'/bundle/search').status_code==200
+    found=friend.get(base).json()['smart_bundle']
+    assert found['options'] and found['options'][0]['subtotal_cents']==65000
+    assert found['budget_cents']==120000
+
+
+def test_plan_budget_updates_move_in_mission_and_invalidates_selection():
+    client=TestClient(main.app)
+    created=client.post('/api/rooms',json={'name':'Alex','mode':'move_in','initial_request':'Home office under $500'}).json();rid=created['room']['id'];base='/api/rooms/'+rid
+    state=main.load(rid);state['shopping_intent']={'shopping_goal':'Home office','product_requirements':['desk','chair'],'budget_cents':50000,'currency':'USD','bundle_requested':True}
+    state['smart_bundle']={'version':2,'options':[{'id':'old'}],'selected':{'id':'old'},'approvals':{'Alex':2},'saved':{'id':'saved-snapshot'}};main.save(rid,state)
+    current=client.get(base).json()
+    response=client.post(base+'/plan/budget',json={'amount_cents':80000,'currency':'USD','revision':current['revision'],'command_id':'move-budget'})
+    assert response.status_code==200
+    updated=client.get(base).json()
+    assert updated['move_in']['mission']['budget_cents']==80000
+    assert updated['shopping_intent']['budget_cents']==80000
+    assert updated['smart_bundle']['selected'] is None and updated['smart_bundle']['approvals']=={}
+    assert updated['smart_bundle']['saved']['id']=='saved-snapshot'

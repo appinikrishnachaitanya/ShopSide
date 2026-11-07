@@ -46,11 +46,9 @@ function attribute(product: any, keys: string[]): string {
 export default function DecisionBoard({
   room,
   products,
-  command,
 }: {
   room: any;
   products: any[];
-  command: (kind: string, value: string) => void;
 }) {
   const selected = products.filter((p) =>
     (room.comparison || []).includes(p.id),
@@ -96,17 +94,7 @@ export default function DecisionBoard({
     <section className="board">
       <p className="eyebrow">OUR DECISION BOARD</p>
       <small>Compare the details you have together.</small>
-      <nav>
-        {["Browse", "Compare", "Decide"].map((p) => (
-          <button
-            aria-pressed={(room.board_preset || "Browse") === p}
-            key={p}
-            onClick={() => command("board_preset", p)}
-          >
-            {p}
-          </button>
-        ))}
-      </nav>
+      {!selected.length && <p>Save two or three products in your plan, then choose Compare saved products.</p>}
       <h3>Our priorities</h3>
       <p>
         Confirmed budget:{" "}
