@@ -79,11 +79,11 @@ export default function Home() {
   const [pendingFocus, setPendingFocus] = useState<string | null>(null);
   const [catalogQuery, setCatalogQuery] = useState("");
   const [searching, setSearching] = useState(false);
+  const [bundleSearching, setBundleSearching] = useState(false);
   const [orderRef, setOrderRef] = useState("");
   const [paymentBusy, setPaymentBusy] = useState(false);
   const [paypalReady, setPaypalReady] = useState(false);
   const [initialMissionLoading, setInitialMissionLoading] = useState(false);
-  const [mode, setMode] = useState("general");
   const [minPrice, setMinPrice] = useState("");
   const [maxPrice, setMaxPrice] = useState("");
   const [inStock, setInStock] = useState(false);
@@ -258,9 +258,9 @@ export default function Home() {
 
   async function enter() {
     try {
-      const result = await api(invite ? "join/" + invite : "rooms", { name, mode: invite ? "general" : mode, initial_request: invite ? "" : shoppingRequest.trim() });
+      const result = await api(invite ? "join/" + invite : "rooms", { name, mode: "general", initial_request: invite ? "" : shoppingRequest.trim() });
       const r = result.room || result;
-      if (!invite && mode === "move_in" && shoppingRequest.trim()) setInitialMissionLoading(true);
+      if (!invite && shoppingRequest.trim()) setInitialMissionLoading(true);
       S(r);
       history.replaceState({}, "", "?room=" + r.id);
       if (result.invite) I(result.invite);
@@ -268,12 +268,11 @@ export default function Home() {
       E("");
       if (!invite && shoppingRequest.trim()) {
         try {
-          await api("rooms/" + r.id + (mode === "move_in" ? "/move-in/turn" : "/concierge"), {
-            text: shoppingRequest.trim(),
-            action: "answer",
-            revision: r.revision,
-            command_id: crypto.randomUUID(),
-          });
+          const interpreted = await api("rooms/" + r.id + "/intent", {});
+          if (interpreted.intent?.shopping_context === "general" && !interpreted.intent?.bundle_requested) {
+            const fresh = await api("rooms/" + r.id);
+            await api("rooms/" + r.id + "/concierge", { text: shoppingRequest.trim(), action: "answer", revision: fresh.revision, command_id: crypto.randomUUID() });
+          }
         } catch (err: any) {
           E(err.message);
         } finally {
@@ -431,7 +430,7 @@ export default function Home() {
           </span>
         </a>
         <span className="topbar-divider" />
-        <span className="topbar-caption">A little closer, even from afar.</span>
+        <span className="topbar-caption">A little closer, even from afar</span>
         {room && (
           <div className="topbar-right">
             <span className={"connection " + (online ? "is-online" : "")}>
@@ -515,9 +514,9 @@ export default function Home() {
           <div className="welcome-grid">
             <div className="welcome-copy">
               <div className="welcome-tag">
-                <span /> MULTIPLAYER SHOPPING, POWERED BY AI
+                <span /> A little closer, even from afar
               </div>
-              {invite ? <><h1>You’re invited<span className="period">.</span><br /><em>Come on in.</em></h1><p>Pick a name and join the shared room. Everything your friend has already planned will be there.</p></> : <><h1>Stop sending links<span className="period">.</span><br /><em>Start shopping together.</em></h1><p>Bring your people into one live room. Discover, compare, and decide with AI—together.</p></>}
+              {invite ? <><h1>You’re invited<span className="period">.</span><br /><em>Come on in.</em></h1><p>Pick a name and join the shared room. Everything your friend has already planned will be there.</p></> : <><h1>Shopping is<br /><em>better together.</em></h1><p>One room. Any shopping goal. Discover, compare and decide with your people and ShopSide AI.</p></>}
               <form
                 className="welcome-form"
                 onSubmit={(e) => {
@@ -526,18 +525,18 @@ export default function Home() {
                 }}
               >
                 {!invite && <>
-                <div className="mode-toggle" aria-label="Shopping mode"><button type="button" aria-pressed={mode === "general"} onClick={() => setMode("general")}>Shop together</button><button type="button" aria-pressed={mode === "move_in"} onClick={() => setMode("move_in")}>Move-In Studio</button></div>
                 <label htmlFor="welcome-shopping">
-                  WHAT ARE WE LOOKING FOR?
+                  WHAT ARE YOU SHOPPING FOR?
                 </label>
                 <input
                   id="welcome-shopping"
                   aria-label="What are you shopping for today?"
-                  placeholder={mode === "move_in" ? "We’re moving next Friday. We need a kitchen and office under $500…" : "A sofa, a gift, or anything you’re shopping for together…"}
+                  placeholder="Describe your goal, budget, and who you’re shopping with…"
                   value={shoppingRequest}
                   onChange={(e) => setShoppingRequest(e.target.value)}
                   maxLength={2000}
                 />
+                <div className="inspiration" aria-label="Shopping inspiration"><span>Need inspiration?</span>{[["Furnish my apartment", "We’re moving into a new apartment and need to furnish it together."], ["Build my workspace", "We need a desk and chair for our workspace."], ["Find the perfect gift", "Help us find a gift together."], ["Compare products", "Help us compare products and choose together."]].map(([label, goal]) => <button key={label} type="button" onClick={() => setShoppingRequest(goal)}>{label}</button>)}</div>
                 </>}
                 <label htmlFor="welcome-name">WHAT SHOULD WE CALL YOU?</label>
                 <div>
@@ -567,23 +566,23 @@ export default function Home() {
                 </span>
               </div>
             </div>
-            <div className={"welcome-art " + (mode === "move_in" ? "is-move-in" : "is-general")}>
+            <div className="welcome-art is-move-in">
               <div className="welcome-art-glow" />
               <div className="welcome-art-top">
                 <span>THE TOGETHER EDIT</span>
                 <span>01 / 08</span>
               </div>
               <img
-                src={mode === "move_in" ? "/products/next-chapter.webp" : "/products/headphones-render.png"}
-                alt={mode === "move_in" ? "Illustrative interior for the Move-In Studio" : "Illustrative rendering of fictional headphones"}
+                src="/products/next-chapter.webp"
+                alt="Illustrative space for shopping together"
               />
               <div className="welcome-art-bottom">
                 <div>
                   <span>MADE FOR SHARED MOMENTS</span>
                   <strong>
-                    {mode === "move_in" ? "A new chapter," : "Find your"}
+                    One room,
                     <br />
-                    {mode === "move_in" ? "better together." : "perfect match."}
+                    endless possibilities.
                   </strong>
                 </div>
                 <span className="art-arrow">
@@ -613,15 +612,18 @@ export default function Home() {
                 <button className="workspace-cart" onClick={openCart}><ShoppingBag size={16}/> Basket <span>{(room.cart || []).reduce((sum:number,item:any)=>sum+item.quantity,0)+(room.external_cart?.length || 0)}</span></button>
               </div>
               <div className="workspace-summary" aria-label="Your shared workspace">
-                <div><strong>Our plan</strong><span>{room.move_in?.mission?.budget_cents != null ? `${room.move_in.mission.currency} ${(room.move_in.mission.budget_cents / 100).toFixed(2)} budget` : "Budget not set"} · {room.shortlist.length} saved</span></div>
+                <div><strong>Our plan</strong><span>{room.move_in?.mission?.budget_cents != null ? `${room.move_in.mission.currency} ${(room.move_in.mission.budget_cents / 100).toFixed(2)} budget` : room.budget != null ? `USD ${(room.budget / 100).toFixed(2)} budget` : "Budget not set"} · {room.shortlist.length} saved</span></div>
                 <div className="workspace-summary-actions">
                   <button type="button" onClick={()=>setWorkspaceView("plan")}>View plan</button>
-                  {room.mode === "move_in" && <button type="button" onClick={()=>setWorkspaceView("room")}>Open our room</button>}
+                  <button type="button" onClick={()=>setWorkspaceView("room")}>Open our room</button>
                   <button type="button" onClick={()=>setWorkspaceView("together")}>Compare {room.shortlist.length > 0 && `(${room.shortlist.length})`}</button>
                   {p && <button type="button" onClick={()=>setWorkspaceView("product")}>View selected</button>}
                 </div>
               </div>
               <div className="workspace-panel" aria-label="Discover products">
+              {initialMissionLoading && <p role="status">Understanding your shopping goal…</p>}
+              {room.shopping_intent?.shopping_goal && <div className="bundle-panel"><strong>Your shopping goal</strong><p>{room.shopping_intent.shopping_goal}</p>{room.shopping_intent.follow_up && <p>{room.shopping_intent.follow_up}</p>}</div>}
+              {room.shopping_intent?.bundle_requested && <section className="bundle-panel" aria-label="Bundle ideas"><h3>Explore a bundle together</h3><p>Looking for: {(room.shopping_intent.product_requirements || []).join(" · ") || "Add product requirements to your goal"}. Prices are observed retailer prices; compatibility, shipping and availability must be checked.</p><button type="button" disabled={!online || bundleSearching} onClick={async()=>{setBundleSearching(true);try{await api("rooms/"+room.id+"/bundle/search",{});E("");}catch(e:any){E(e.message);}finally{setBundleSearching(false);}}}>{bundleSearching ? "Finding combinations…" : "Find combinations"}</button>{Array.isArray(room.bundle_options) && (room.bundle_options.length ? room.bundle_options.map((option:any,i:number)=><div className="bundle-option" key={i}><strong>{option.currency} {(option.total_cents/100).toFixed(2)} observed total</strong><span>{option.products.map((id:string)=>all.find((item:any)=>item.id===id)?.name || "Product").join(" + ")}</span></div>) : <p>No combinations found within the budget. Try a broader search.</p>)}</section>}
               <div className="discovery">
                 <div className="section-heading">
                   <div>
@@ -920,7 +922,7 @@ export default function Home() {
                   </p>
                 )}
               </article>
-              {room.mode === "move_in" && p && <button className="view-in-room" onClick={()=>setWorkspaceView("room")}>Open in 3D room <ArrowUpRight size={15}/></button>}
+              {p && <button className="view-in-room" onClick={()=>setWorkspaceView("room")}>Open in 3D room <ArrowUpRight size={15}/></button>}
               {p && <WhyPick room={room} product={p} />}
               {workspaceView === "product" && p?.provenance === "channel3" && (
                 <ProductDetails key={p.id} product={p} room={room} online={online} />
@@ -994,10 +996,10 @@ export default function Home() {
               )}
               </div>
               <div className="workspace-panel" hidden={workspaceView!=="plan"} aria-label="Shopping plan">
-                {room.mode === "move_in" ? <><MoveIn room={room} online={online} me={me} api={api} initialLoading={initialMissionLoading} onResults={()=>setWorkspaceView("discover")} /><MemoryReceipt room={room} online={online} /></> : <Concierge room={room} online={online} />}
+                {room.mode === "move_in" ? <><MoveIn room={room} online={online} me={me} api={api} initialLoading={initialMissionLoading} onResults={()=>setWorkspaceView("discover")} /><MemoryReceipt room={room} online={online} /></> : <><Concierge room={room} online={online} /><button type="button" disabled={!online} onClick={async()=>{try{await api("rooms/"+room.id+"/home-plan",{});E("");}catch(e:any){E(e.message);}}}>Set up home planning</button></>}
               </div>
               <div className="workspace-panel" hidden={workspaceView!=="room"} aria-label="Room view">
-                {workspaceView==="room" && (room.mode === "move_in" ? <RoomPreview room={room} focused={p} online={online} me={me} command={command} /> : <p>Switch to Move-In Studio to use the 3D room.</p>)}
+                {workspaceView==="room" && <RoomPreview room={room} focused={p} online={online} me={me} command={command} />}
               </div>
               <div className="workspace-panel" hidden={workspaceView!=="together"} aria-label="Compare together">
               <div className="together-header" id="together">

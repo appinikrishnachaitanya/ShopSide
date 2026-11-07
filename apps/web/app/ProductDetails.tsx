@@ -81,7 +81,7 @@ export default function ProductDetails({
         <button disabled={!online || loading} onClick={() => action("similar")}>
           Find similar products ↗
         </button>
-        <button disabled={!online || loading} onClick={() => action("cheaper")}>Find cheaper similar options</button>
+        <button disabled={!online || loading} onClick={() => action("cheaper")}>Deal Rescue: find cheaper alternatives</button>
       </div>
       {notice && <p role="status">{notice}</p>}
       {!detail && !error && (

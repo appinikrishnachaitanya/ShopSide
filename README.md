@@ -20,12 +20,13 @@ Plan a home, discover real products, and make the decision together.
 
 Setting up a new home involves more than finding a product. Families and friends have different priorities, a limited budget and a long list of decisions. ShopSide gives them one room to explore options, talk through tradeoffs and agree on what comes next.
 
-Move-In Studio and general shopping share the same shared room for up to four people. Members join with a private invitation, see updates live and can reconnect to their saved state. A shared choice requires approval by every current member. No account is required for the guest flow.
+Shoppers start with one shared goal in a room for up to four people. Gemini interprets the request into a structured goal and enables the existing Move-In plan when it detects a move or home-furnishing context. Members join with a private invitation, see updates live and can reconnect to their saved state. A shared choice requires approval by every current member. No account is required for the guest flow.
 
 | Experience | What it does |
 | --- | --- |
 | **Move-In Studio** | Turn a brief into an editable mission with budget, priorities and constraints; Gemini asks at most four follow-up questions. |
 | **Real discovery** | Search Channel3 products, inspect available details and variants, compare retailer offers, and find similar or cheaper options when supported. |
+| **Bundle ideas** | For a multi-item goal with a total budget, search Channel3 for combinations priced within that budget. Product compatibility, delivery and current prices must be checked with retailers. |
 | **Shared decisions** | Spotlight, shortlist, compare, chat, react and explicitly approve a choice. A reaction is not an approval. |
 | **Live 3D room** | Place, move and react to shared product markers in an interactive Three.js room. |
 | **Why this pick?** | Review known price and product facts, each person's feedback and details still worth checking. |
@@ -95,7 +96,7 @@ Open **http://localhost:3000**. Create a room, copy the invite and open it in a 
 
 ### Try the two-person journey
 
-1. Choose **Move-In Studio** and enter: “We're moving next Friday and need a home office and kitchen under $500.” Open **View plan** to review or edit the mission.
+1. Enter: “We're moving next Friday and need a home office and kitchen under $500.” When the goal has been interpreted, open **View plan** to review or edit the mission.
 2. Search for real products or choose **Find matches from your plan**. Open a result to inspect details and retailer offers, then add it to the shared plan.
 3. Invite a friend. Open **Our room** to place a product marker and react to it; discuss and explicitly approve a plan item together.
 4. Open a Channel3 offer at its retailer. For the fictional ShopSide merchant catalog, the designated payer can review a USD quote and approve a PayPal Sandbox order.
@@ -184,6 +185,7 @@ Live provider tests are opt-in and make real provider requests. With configured 
 - Channel3 conversations, search, product detail, similar products, and default and agentic search were exercised against a configured account. Vertex AI express mission extraction and collaborative ADK calls were also exercised. Results and availability can change.
 - A shared memory receipt requires two timestamped approvals and two independently verified sandbox payments. Existing checkout supports only one payer, so the receipt remains unavailable until a separately authorized two-payer checkout exists; prior approvals without timestamps are not backfilled.
 - A real PayPal **sandbox order was created**, but buyer approval and capture have not been verified end to end. Never assume a completed purchase without provider read-back. Unknown payment outcomes require reconciliation before retrying.
+- Bundle ideas are observed-price combinations, not verified compatible packages or a single merchant checkout. A separate automatic Deal Rescue workflow is not implemented; live product details support a user-initiated cheaper-alternatives search.
 - The existing backend and independent desktop/mobile browser tests cover room synchronization, four-member approval, marker placements and reactions, budget display, the no-WebGL fallback, cart boundaries and mocked payment behavior. Provider tests are separate.
 - Product URL lookup, image search, price history, streaming assistant responses, affiliate reporting and product-alert webhooks are not implemented. The 3D preview is illustrative, not an accurate model or fit measurement.
 - Room coordination and rate limits are in memory; PostgreSQL persistence alone does not enable multi-instance synchronization.

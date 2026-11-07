@@ -1,8 +1,9 @@
+import { seedMoveInRoom } from "./move-in-fixture";
 import { test, expect } from '@playwright/test';
 
 test('the selected product is shown immediately while shared focus is updating', async ({ page }) => {
   await page.goto(process.env.SHOPSIDE_TEST_URL || 'http://localhost:3000');
-  await page.getByRole("button", { name: "Move-In Studio", exact: true }).click();await page.getByLabel('Your name').fill('Alex');
+  await seedMoveInRoom(page);await page.getByLabel('Your name').fill('Alex');
   await page.getByRole('button', { name: 'Create your shopping room' }).click();
   await expect(page.getByText('Connected', { exact: true })).toBeVisible();
   let release!: () => void;
