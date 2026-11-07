@@ -128,7 +128,7 @@ test("desktop and mobile share persisted room", async ({ browser }) => {
   await first.getByRole("button", { name: "Update quantity" }).click();
   await expect(second.getByLabel("Quantity 2 midnight")).toHaveValue("2");
   await first
-    .getByRole("button", { name: "Review sandbox checkout", exact: true })
+    .getByRole("button", { name: "Continue to PayPal Sandbox", exact: true })
     .click();
   await expect(first.getByText("Total $198.00 USD")).toBeVisible();
   await expect(

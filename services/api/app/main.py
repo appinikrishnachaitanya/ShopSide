@@ -792,15 +792,27 @@ def payer(r,request):
 @app.get('/api/rooms/{r}/merchant-orders/{order_id}/receipt')
 def merchant_order_receipt(r:str,order_id:str,request:Request):
     with lock:
-        auth(r,request)
+        auth(r,request);room_state=load(r)
         p=payment_load(order_id,r)
         if not p.get('merchant_id') or p['status']!='paid':raise HTTPException(404,'Completed merchant order not found')
+        trail=[]
+        labels={'offer_published':'Merchant offer published','accepted':'Buyer accepted the offer',
+                'auto_accepted_within_buyer_limit':'Offer accepted within buyer limit',
+                'payment_captured':'PayPal Sandbox payment verified'}
+        for row in db.execute('SELECT state FROM merchant_opportunities WHERE room_id=?',(r,)).fetchall():
+            opportunity=merchant_service.read(row)
+            if (opportunity.get('offer') or {}).get('id')!=p.get('quote_id'):continue
+            trail=[{'event':entry['event'],'label':labels[entry['event']],'actor':entry.get('actor'),
+                    'at':entry.get('at')} for entry in opportunity.get('activity',[])
+                   if entry.get('event') in labels and isinstance(entry.get('at'),(int,float))]
+            break
         return {'order_id':p['id'],'merchant_id':p['merchant_id'],'merchant_name':p.get('merchant_name'),
             'items':[{'product_id':line['product'],'name':line['name'],'quantity':line['quantity'],
                       'reference_price_cents':line['price']} for line in p['items']],
             'reference_total_cents':p['reference_total'],'total_cents':p['total'],
             'savings_cents':p['reference_total']-p['total'],'currency':p['currency'],
             'paypal_sandbox_order_id':p['provider_id'],'paypal_sandbox_capture_id':p['capture'],'paid_at':p['paid_at'],
+            'room_members':room_state['people'],'payer':p['payer'],'decision_trail':trail,
             'disclosure':'Fictional ShopSide sandbox products; no goods shipped and no real money charged.'}
 @app.get('/api/paypal/config')
 def payment_config(): return {'client_id':os.getenv('PAYPAL_CLIENT_ID'),'currency':'USD'}
@@ -960,7 +972,7 @@ async def payment(r:str,id:str,action:str,request:Request,background_tasks:Backg
         if p['status']=='paid':
             background_tasks.add_task(auto_memory_receipts,r,[line['product'] for line in p['items']])
         return {'status':p['status'],'order_id':p.get('provider_id'),'local_order_id':p['id'],'capture':p.get('capture')}
-    except (httpx.HTTPError,KeyError) as exc:
+    except (httpx.HTTPError,KeyError,IndexError,TypeError,ValueError) as exc:
         raise HTTPException(502,'Provider outcome uncertain; check payment status before retrying') from exc
     finally: payment_busy.discard(id)
 

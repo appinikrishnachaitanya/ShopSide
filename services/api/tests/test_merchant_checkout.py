@@ -71,6 +71,8 @@ def test_accepted_offer_paypal_capture_and_merchant_order(monkeypatch):
     assert receipt['order_id']==payment['id'] and receipt['total_cents']==27000
     assert receipt['paypal_sandbox_capture_id']=='SANDBOX-CAPTURE'
     assert len(receipt['items'])==2
+    assert receipt['payer'] and receipt['room_members']
+    assert [event['event'] for event in receipt['decision_trail']][-1]=='payment_captured'
     assert TestClient(main.app).get(f'/api/rooms/{room_id}/merchant-orders/{payment["id"]}/receipt').status_code==403
     for line in payment['items']:
         stock=main.db.execute('SELECT stock_quantity,reserved_quantity FROM merchant_inventory WHERE merchant_id=? AND product_id=?',
@@ -80,6 +82,24 @@ def test_accepted_offer_paypal_capture_and_merchant_order(monkeypatch):
     assert portal.status_code==200
     assert portal.json()['metrics']['confirmed_orders']>=1
     assert any(order['id']==payment['id'] and order['paypal_capture_id']=='SANDBOX-CAPTURE' for order in portal.json()['orders'])
+
+
+def test_malformed_paypal_readback_returns_reconcilable_error(monkeypatch):
+    client,room_id,offer,_=accepted_offer()
+    payment=client.post(f'/api/rooms/{room_id}/seller-offers/{offer["id"]}/checkout').json()
+    async def provider(method,path,payload=None,operation=None):
+        if method=='POST':return {'id':'PAYPAL-SANDBOX-ORDER'}
+        return {'status':'COMPLETED','purchase_units':[]}
+    monkeypatch.setattr(main,'paypal',provider)
+    base=f'/api/rooms/{room_id}/payments/{payment["id"]}'
+    assert client.post(base+'/create').status_code==200
+    result=client.post(base+'/status')
+    assert result.status_code==502
+    assert 'check payment status' in result.json()['detail'].lower()
+    with main.lock:
+        pending=main.payment_load(payment['id'],room_id)
+        main.release_merchant_reservations(pending)
+        main.payment_save(pending)
 
 
 def test_unaccepted_or_external_offer_cannot_checkout():

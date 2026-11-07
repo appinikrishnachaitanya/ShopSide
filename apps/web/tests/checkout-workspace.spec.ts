@@ -13,7 +13,7 @@ test('sandbox cart shows the quote and PayPal approval boundary', async ({ page 
   await expect(page.getByRole('dialog', { name: 'Product details' })).toBeVisible();
   await page.getByRole('button', { name: 'Add to cart', exact: true }).click();
   await expect(page.getByText('$39.00 each · $39.00')).toBeVisible();
-  await page.getByRole('button', { name: 'Review sandbox checkout' }).click();
+  await page.getByRole('button', { name: 'Continue to PayPal Sandbox' }).click();
   await expect(page.getByText('Total $39.00 USD')).toBeVisible();
   await page.getByRole('button', { name: 'Create PayPal sandbox order' }).click();
   await expect(page.getByText('TEST-SANDBOX-ORDER')).toBeVisible();

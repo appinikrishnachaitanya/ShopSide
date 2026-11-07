@@ -29,7 +29,6 @@ import {
   Search,
   ShoppingBag,
   Sparkles,
-  Zap,
 } from "lucide-react";
 export default function Home() {
   const [room, S] = useState<any>(null),
@@ -174,6 +173,7 @@ export default function Home() {
     [target, G] = useState("everyone"),
     [query, Q] = useState(""),
     [quote, V] = useState<any>(null);
+  useEffect(()=>{if(quote)setCartOpen(true)},[quote]);
   useEffect(() => {
     if (!room?.id) return;
     let stopped = false;
@@ -383,7 +383,15 @@ export default function Home() {
   function openCart() {
     setWorkspaceView("discover");
     setCartOpen(true);
-    requestAnimationFrame(() => document.querySelector(".cart-details")?.scrollIntoView({behavior:"smooth", block:"nearest"}));
+  }
+  async function openRetailerCheckout(productId:string,retailer:string){
+    const tab=window.open("about:blank","_blank");
+    try{
+      const response=await sessionFetch(`/api/rooms/${encodeURIComponent(room.id)}/products/${encodeURIComponent(productId.replace(/^channel3:/,""))}/retailer-link?retailer=${encodeURIComponent(retailer)}`);
+      const data=await response.json().catch(()=>null);
+      if(!response.ok||!data?.url)throw Error(data?.detail||"This retailer offer is no longer available. Try another offer.");
+      if(tab){tab.opener=null;tab.location.href=data.url}else location.href=data.url;
+    }catch(e:any){tab?.close();E(e.message)}
   }
   async function discover(pageToken?: string) {
     setSearching(true);
@@ -486,14 +494,7 @@ export default function Home() {
       {notice && (
         <p role="status" className="cart-notice">
           <span>{notice}</span>
-          <button
-            className="view-cart"
-            onClick={() =>
-              document
-                .querySelector(".cart-details")
-                ?.scrollIntoView({ behavior: "smooth", block: "nearest" })
-            }
-          >
+          <button className="view-cart" onClick={openCart}>
             View cart
           </button>
           <button
@@ -614,7 +615,7 @@ export default function Home() {
             <section id="shop" className="shop-column">
               <div className="workspace-bar">
                 <div className="workspace-bar-title"><span className="workspace-orb"><Sparkles size={17}/></span><div><div className="workspace-name"><strong>{room.title}</strong><button className="edit-title" disabled={!online} onClick={()=>{const title=prompt("Room title",room.title);if(title)command("title",title);}}>Edit</button></div><small>{me?.name && <><span aria-label="Your room identity">You’re {me.name}</span> · </>}{room.people.length} {room.people.length === 1 ? "person" : "people"} · {online ? "Live" : "Reconnecting"}{room.move_in?.mission?.budget_cents != null ? ` · ${room.move_in.mission.currency} ${(room.move_in.mission.budget_cents/100).toFixed(2)} budget` : ""}</small></div></div>
-                <button className="workspace-cart" onClick={openCart}><ShoppingBag size={16}/> Basket <span>{(room.cart || []).reduce((sum:number,item:any)=>sum+item.quantity,0)+(room.external_cart?.length || 0)}</span></button>
+                <button className="workspace-cart" onClick={openCart}><ShoppingBag size={16}/> Cart & checkout <span>{(room.cart || []).reduce((sum:number,item:any)=>sum+item.quantity,0)+(room.external_cart?.length || 0)}</span></button>
               </div>
               <div className="workspace-summary" aria-label="Your shared workspace">
                 <div><strong>Our plan</strong><span>{room.move_in?.mission?.budget_cents != null ? `${room.move_in.mission.currency} ${(room.move_in.mission.budget_cents / 100).toFixed(2)} budget` : room.budget != null ? `USD ${(room.budget / 100).toFixed(2)} budget` : "Budget not set"} · {room.shortlist.length} shortlisted {room.shortlist.length===1?"product":"products"}{room.smart_bundle?.saved ? " · 1 saved bundle" : ""}</span></div>
@@ -1140,56 +1141,17 @@ export default function Home() {
                   ShopSide can use shared messages to help when asked.
                 </span>
               </div>
-              <details className="side-details">
-                <summary>
-                  <span>
-                    <Zap size={15} /> Room priorities
-                  </span>
-                  <span>＋</span>
-                </summary>
-                <div>
-                  <label>WHAT MATTERS TO YOU?</label>
-                  <input
-                    aria-label="Your shopping preference"
-                    placeholder="e.g. comfortable for long calls"
-                    onBlur={(e) => {
-                      if (e.target.value) command("preference", e.target.value);
-                    }}
-                  />
-                  {Object.entries(room.preferences || {}).map(
-                    ([actor, value]) => (
-                      <p key={actor}>
-                        {actor}: {String(value)}
-                      </p>
-                    ),
-                  )}
-                </div>
-              </details>
-              <details className="side-details">
-                <summary>
-                  <span>
-                    <Sparkles size={15} /> Agent activity
-                  </span>
-                  <span>{room.activity?.length || "＋"}</span>
-                </summary>
-                <div>
-                  {room.activity?.slice(-5).map((a: any, i: number) => (
-                    <p key={i}>
-                      {a.tool}: {a.outcome}
-                    </p>
-                  )) || <p>No activity yet.</p>}
-                </div>
-              </details>
+              {cartOpen && <button className="cart-backdrop" aria-label="Close cart and checkout" onClick={()=>setCartOpen(false)} />}
               <details
                 className="side-details cart-details"
-                open={cartOpen || !!quote}
+                open={cartOpen}
                 onToggle={(e) => {
-                  if (!quote) setCartOpen(e.currentTarget.open);
+                  setCartOpen(e.currentTarget.open);
                 }}
               >
                 <summary>
                   <span>
-                    <ShoppingBag size={15} /> Shared cart
+                    <ShoppingBag size={15} /> Cart & checkout
                   </span>
                   <span className="cart-count">
                     {(room.cart || []).reduce(
@@ -1199,12 +1161,14 @@ export default function Home() {
                   </span>
                 </summary>
                 <div>
+                  <div className="cart-intro"><span>YOUR SHARED CART</span><h2>Everything you chose, in one place.</h2><p>Shop together here. Each item keeps its verified checkout destination.</p></div>
+                  <div className="cart-route-summary"><span>{(room.cart || []).reduce((count:number,item:any)=>count+item.quantity,0)} ShopSide sandbox items</span><span>{room.external_cart?.length || 0} retailer items</span></div>
                   {room.cart?.length === 0 && !room.external_cart?.length && (
                     <p>
                       Nothing in your cart yet. Find something you both love.
                     </p>
                   )}
-                  {!!room.cart?.length && <><h3>ShopSide sandbox items</h3><p>Fictional products · no goods shipped. PayPal Sandbox checkout.</p></>}
+                  {!!room.cart?.length && <><h3>Pay here · ShopSide sandbox</h3><p>Fictional products · no goods shipped. PayPal Sandbox checkout.</p></>}
                   {room.cart?.map((item: any) => (
                     <div
                       className="cart-line"
@@ -1235,7 +1199,7 @@ export default function Home() {
                   ))}
                   {!!room.external_cart?.length && (
                     <section aria-label="Retailer items">
-                      <h3>Retailer items</h3>
+                      <h3>Buy at retailers · live products</h3>
                       <p>
                         Checkout happens on the retailer’s site; excluded from
                         PayPal sandbox checkout.
@@ -1245,15 +1209,10 @@ export default function Home() {
                           <strong>{item.name}</strong>
                           {item.offers.map((offer: any, i: number) => (
                             <p key={i}>
-                              <a
-                                href={offer.url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                              >
+                              <button type="button" onClick={()=>openRetailerCheckout(item.id,offer.retailer)}>
                                 {offer.retailer} · {offer.currency}{" "}
-                                {offer.price_cents == null ? "Price unavailable" : (offer.price_cents / 100).toFixed(2)} · Visit
-                                retailer ↗
-                              </a>
+                                {offer.price_cents == null ? "Price unavailable" : (offer.price_cents / 100).toFixed(2)} · Checkout at retailer ↗
+                              </button>
                             </p>
                           ))}
                           <button
@@ -1277,7 +1236,7 @@ export default function Home() {
                       {catalog.find((p) => p.id === proposal.product)?.name}
                     </button>
                   ))}
-                  <button
+                  {(!!room.cart?.length || !!room.checkout) && <button
                     className="checkout-button"
                     disabled={
                       !online ||
@@ -1287,9 +1246,9 @@ export default function Home() {
                     onClick={checkout}
                   >
                     {me?.is_payer
-                      ? "Review sandbox checkout"
+                      ? "Continue to PayPal Sandbox"
                       : room.payer + " handles checkout"}
-                  </button>
+                  </button>}
                   {quote && (
                     <section className="quote">
                       <h3>{quote.merchant_id?"Merchant offer checkout":"Sandbox quote"}</h3>

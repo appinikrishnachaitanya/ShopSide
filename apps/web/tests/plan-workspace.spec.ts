@@ -16,7 +16,12 @@ test('the shared plan keeps budget editing visible after a budget is chosen',asy
  await plan.getByRole('button',{name:'Save budget'}).click();
  await expect(plan.getByText('USD 800.00')).toBeVisible();
  await expect(plan.getByRole('button',{name:'Compare saved products'})).toBeDisabled();
+ await plan.getByLabel('Your shopping preference').fill('Comfortable for long calls');
+ await plan.getByRole('button',{name:'Save preference'}).click();
+ await expect(plan.getByLabel('Shared preferences').getByText('Comfortable for long calls')).toBeVisible();
+ await expect(page.getByText('Room priorities')).toHaveCount(0);
  await page.getByRole('button',{name:'Close Our plan'}).click();
  await page.getByRole('button',{name:'View plan'}).click();
  await expect(plan.getByText('USD 800.00')).toBeVisible();
+ await expect(plan.getByLabel('Shared preferences').getByText('Comfortable for long calls')).toBeVisible();
 });
