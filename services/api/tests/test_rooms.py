@@ -260,3 +260,19 @@ def test_duplicate_names_ignore_case_and_whitespace():
     created=a.post('/api/rooms',json={'name':'  Alice  '}).json()
     assert created['room']['people']==['Alice']
     assert b.post('/api/join/'+created['invite'],json={'name':' ALICE '}).status_code==409
+
+def test_websocket_observes_commit_without_local_notification():
+    """Simulate a second Cloud Run instance writing the same database."""
+    import json
+    import app.main as main
+    with TestClient(main.app) as client:
+        room=client.post('/api/rooms',json={'name':'Alex'}).json()['room'];rid=room['id']
+        with client.websocket_connect('/api/rooms/'+rid+'/live',headers={'origin':'http://localhost:3000'}) as ws:
+            assert ws.receive_json()['revision']==0
+            state=main.load(rid)
+            state['messages'].append({'actor':'Sam','text':'Cross-instance message'})
+            state['revision']+=1
+            main.db.execute('UPDATE rooms SET state=? WHERE id=?',(json.dumps(state),rid))
+            main.db.commit()  # No notify(rid): the other instance has no subscriber handle.
+            incoming=ws.receive_json()
+            assert incoming['messages'][-1]['text']=='Cross-instance message'

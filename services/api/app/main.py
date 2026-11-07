@@ -503,13 +503,18 @@ async def live(ws:WebSocket,r:str):
     loop=asyncio.get_running_loop(); changed=asyncio.Event(); entry=(loop,changed)
     with lock: subscribers.setdefault(r,set()).add(entry)
     try:
+        last_revision=None
         while True:
-            changed.clear()
             with lock: state=load(r)
-            await ws.send_json(public_room_state(state))
+            if state['revision']!=last_revision:
+                await ws.send_json(public_room_state(state))
+                last_revision=state['revision']
+            changed.clear()
             waiter=asyncio.create_task(changed.wait())
             receiver=asyncio.create_task(ws.receive())
-            done,pending=await asyncio.wait([waiter,receiver],return_when=asyncio.FIRST_COMPLETED)
+            # A local event is fast; polling also catches commits made by another
+            # Cloud Run instance, whose in-memory subscriber list is separate.
+            done,pending=await asyncio.wait([waiter,receiver],timeout=1.5,return_when=asyncio.FIRST_COMPLETED)
             for task in pending: task.cancel()
             await asyncio.gather(*pending,return_exceptions=True)
             if receiver in done and receiver.result()['type']=='websocket.disconnect': break
@@ -1221,7 +1226,7 @@ async def merchant_opportunity_action(op_id:str,body:merchant_service.DealReques
     with lock:
         op=merchant_service.scoped_opportunity(db,merchant_id,op_id);m=merchant_service.merchant(db,merchant_id)
         s=load(op['room_id']);result=merchant_service.publish(db,s,op,m,proposal,actor,notify)
-        op['agent_trace']=trace;op.setdefault('commands',[]).append(body.command_id);merchant_service.save_op(db,op)
+        op['agent_trace']=trace;op.setdefault('agent_traces',[]).append({'at':merchant_service.now(),'actor':actor,**trace});op.setdefault('commands',[]).append(body.command_id);merchant_service.save_op(db,op)
         if result.get('quote'):s['revision']+=1;save(op['room_id'],s)
         return result
 
@@ -1299,7 +1304,7 @@ async def process_merchant_jobs(request:Request):
             with lock:
                 fresh=merchant_service.scoped_opportunity(db,m['id'],op['id']);room=load(fresh['room_id'])
                 outcome=merchant_service.publish(db,room,fresh,merchant_service.merchant(db,m['id']),proposal,'merchant_ai',notify)
-                fresh['agent_trace']=trace;merchant_service.save_op(db,fresh)
+                fresh['agent_trace']=trace;fresh.setdefault('agent_traces',[]).append({'at':merchant_service.now(),'actor':'merchant_ai',**trace});merchant_service.save_op(db,fresh)
                 if outcome.get('quote'):room['revision']+=1;save(fresh['room_id'],room)
                 job['status']='done';merchant_service.put(db,'merchant_jobs',job['id'],job)
                 results.append({'id':op['id'],'status':'published' if outcome.get('quote') else 'human_review'})

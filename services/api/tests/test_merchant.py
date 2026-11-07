@@ -115,6 +115,8 @@ def test_durable_automatic_job_and_room_fanout(monkeypatch):
     assert any(r['status']=='published' for r in next_run.json()['results'])
     quotes=buyer.get(base).json()['flash_offers']
     assert len(quotes)==2 and quotes[0]['status']=='CANCELLED' and quotes[1]['status']=='OFFER_PUBLISHED'
+    history=TestClient(main.app).get('/api/merchant/me',headers={'Authorization':'Bearer '+ids[0][1]}).json()['opportunities'][0]['agent_traces']
+    assert len(history)==2 and all(entry['model_calls']==1 for entry in history)
 
 def test_real_quote_expiry_and_product_ownership(monkeypatch):
     from app.merchant_agent import OfferProposal

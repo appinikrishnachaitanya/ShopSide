@@ -14,15 +14,33 @@ function displayFact(value: any): string {
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   if (Array.isArray(value)) return value.map(displayFact).filter(Boolean).join(", ");
   if (value && typeof value === "object") {
-    if ("value" in value) return [displayFact(value.value), displayFact(value.unit)].filter(Boolean).join(" ");
-    return Object.entries(value).map(([key, item]) => [key, displayFact(item)].filter(Boolean).join(": ")).join(" · ");
+    if ("value" in value || "number" in value) return [displayFact(value.value ?? value.number), displayFact(value.unit)].filter(Boolean).join(" ");
+    return Object.entries(value).map(([key, item]) => [key.replace(/([a-z])([A-Z])/g, "$1 $2"), displayFact(item)].filter(Boolean).join(": ")).join(" · ");
   }
   return "";
 }
-function attribute(product: any, keys: string[]): string {
+function formatDimensions(raw: any): string {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return displayFact(raw);
+  const axes = ("length" in raw ? ["length", "width", "height"] : ["width", "depth", "height"])
+    .filter(axis => raw[axis] != null);
+  const measurements = axes.map(axis => {
+    const entry = raw[axis];
+    const value = entry && typeof entry === "object" ? (entry.number ?? entry.value) : entry;
+    const unit = entry && typeof entry === "object" ? entry.unit : raw.unit;
+    return {value: typeof value === "number" || typeof value === "string" ? String(value).trim() : "", unit: typeof unit === "string" ? unit.trim() : ""};
+  }).filter(item => item.value && /^-?\d+(?:\.\d+)?$/.test(item.value));
+  if (measurements.length < 2) return displayFact(raw);
+  const common = measurements[0].unit && measurements.every(item => item.unit === measurements[0].unit);
+  return measurements.map(item => item.value + (common || !item.unit ? "" : ` ${item.unit}`)).join(" × ") + (common ? ` ${measurements[0].unit}` : "");
+}
+
+function attributeValue(product: any, keys: string[]): any {
   const attributes = product.attributes || {};
   const entry = Object.entries(attributes).find(([key]) => keys.includes(key.toLowerCase().replace(/[^a-z0-9]/g, "")));
-  return entry ? displayFact(entry[1]) : "";
+  return entry?.[1];
+}
+function attribute(product: any, keys: string[]): string {
+  return displayFact(attributeValue(product, keys));
 }
 
 export default function DecisionBoard({
@@ -64,7 +82,7 @@ export default function DecisionBoard({
             " " +
             (offer.price_cents / 100).toFixed(2)
           : "Not provided",
-    dimensions: displayFact(offer?.dimensions) || attribute(p, ["dimensions", "size", "productdimensions"]) || "Not provided",
+    dimensions: formatDimensions(offer?.dimensions) || formatDimensions(attributeValue(p, ["dimensions", "size", "productdimensions"])) || "Not provided",
     seating: attribute(p, ["seatingcapacity", "seatcapacity", "numberofseats", "seats"]) || "Not provided",
     material: attribute(p, ["material", "materials", "upholstery", "upholsterymaterial", "fabric"]) || "Not provided",
     delivery: displayFact(offer?.delivery) || attribute(p, ["delivery", "shipping", "deliverytime"]) || "Not provided",
