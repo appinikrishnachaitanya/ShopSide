@@ -3,7 +3,7 @@ from datetime import datetime
 from fastapi.testclient import TestClient
 from app.main import app
 
-def test_memory_requires_two_approvals_and_verified_distinct_payments(monkeypatch):
+def test_memory_requires_two_approvals_and_one_verified_payer_payment(monkeypatch):
     import app.main as main
     import app.memory_receipt as memory
     async def line(facts):return 'A choice made together.'
@@ -28,15 +28,11 @@ def test_memory_requires_two_approvals_and_verified_distinct_payments(monkeypatc
         p={'id':'payment'+str(number),'room':r,'payer':payer,'status':'paid','verification':'paypal_order_readback','verified_at':committed,'capture':'capture'+str(number),'provider_id':'order'+str(number),'currency':'USD','total':1000,'items':[{'product':'11'}]}
         p.update(overrides);main.payment_save(p)
     paid('A',1)
-    assert a.post(base+'/memory-receipts',json={'product_id':'11'}).status_code==409
-    paid('B',2,capture='capture1')
-    assert a.post(base+'/memory-receipts',json={'product_id':'11'}).status_code==409
-    paid('B',2)
     assert a.get(base+'/memory-receipts/status').json()['ready']==['11']
     response=a.post(base+'/memory-receipts',json={'product_id':'11'});assert response.status_code==200
     receipt=response.json();assert receipt['line']=='A choice made together.' and receipt['committed_at']==committed
     assert receipt['members'][0]['reaction']=='love' and receipt['members'][1]['reaction'] is None
-    assert receipt['payments_verified']==2 and receipt['environment']=='sandbox'
+    assert receipt['payments_verified']==1 and receipt['paid_by']=='A' and receipt['environment']=='sandbox'
     assert b.get(base).json()['memory_receipts']['11']==receipt
     assert command(b,'marker_reaction',json.dumps({'product_id':'11','reaction':'price'}),'later').status_code==200
     assert b.post(base+'/memory-receipts',json={'product_id':'11'}).json()==receipt
@@ -45,3 +41,13 @@ def test_legacy_approval_times_are_not_fabricated():
     from app.memory_receipt import eligible_memory
     state={'people':['A','B'],'move_in':{'items':{'11':{'name':'Lamp','approvals':{'A':True,'B':True}}}}}
     assert eligible_memory(state,'11',[]) is None
+
+
+def test_other_participants_payment_cannot_unlock_memory():
+    from app.memory_receipt import eligible_memory
+    stamp='2026-11-07T10:00:00+00:00'
+    state={'people':['A','B'],'payer':'A','move_in':{'items':{'11':{'name':'Lamp','committed_at':stamp,
+        'approvals':{'A':True,'B':True},'approval_times':{'A':stamp,'B':stamp}}}}}
+    payment={'id':'other','payer':'B','status':'paid','verification':'paypal_order_readback','verified_at':stamp,
+             'capture':'capture','provider_id':'paypal-order','currency':'USD','total':1000,'items':[{'product':'11'}]}
+    assert eligible_memory(state,'11',[payment]) is None

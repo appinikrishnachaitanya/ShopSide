@@ -45,3 +45,19 @@ def test_price_history_unavailable_is_honest(monkeypatch):
     result=discovery.price_history('shoe')
     assert result['available'] is False
     assert 'unavailable' in result['reason']
+
+
+def test_malformed_price_statistics_degrade_to_unavailable(monkeypatch):
+    import channel3_sdk
+    from types import SimpleNamespace
+    from datetime import datetime,timezone
+    monkeypatch.setenv('CHANNEL3_API_KEY','test-key')
+    class PriceTracking:
+        def retrieve_history(self,*_args,**_kwargs):
+            return SimpleNamespace(statistics=SimpleNamespace(min_price=None),
+                history=[SimpleNamespace(timestamp=datetime.now(timezone.utc),price=20,currency='USD')])
+    class Client:
+        def __init__(self,**_kwargs):self.price_tracking=PriceTracking()
+    monkeypatch.setattr(channel3_sdk,'Channel3',Client)
+    result=discovery.price_history('shirt')
+    assert result['available'] is False

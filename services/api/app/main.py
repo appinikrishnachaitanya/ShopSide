@@ -997,7 +997,7 @@ async def create_memory_receipt(r,product_id):
         existing=state.get('memory_receipts',{}).get(product_id)
         if existing:return existing
         facts=memory_facts(r,state,product_id)
-        if not facts:raise HTTPException(409,'A receipt requires two timestamped approvals and two independently verified sandbox payments for this item')
+        if not facts:raise HTTPException(409,'A memory requires two timestamped approvals and one verified sandbox payment by the room payer for this item')
         if key in memory_busy:raise HTTPException(409,'This memory is being created')
         memory_busy.add(key)
     try:
@@ -1027,7 +1027,7 @@ def memory_status(r:str,request:Request):
         ids=state.get('move_in',{}).get('items',{})
         payments=[json.loads(row[0]) for row in db.execute('SELECT state FROM payments WHERE room=?',(r,)).fetchall()] if ids else []
         return {'ready':[product_id for product_id in ids if eligible_memory(state,product_id,payments)],
-                'receipts':list(state.get('memory_receipts',{}).values()),'checkout_supports_two_payers':False}
+                'receipts':list(state.get('memory_receipts',{}).values()),'payment_model':'one_designated_payer'}
 
 @app.post('/api/rooms/{r}/memory-receipts')
 async def make_memory(r:str,body:MemoryRequest,request:Request):

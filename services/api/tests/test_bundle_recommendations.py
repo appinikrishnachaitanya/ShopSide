@@ -27,6 +27,15 @@ def test_model_proposal_is_validated_and_total_is_server_calculated():
     assert 'Unverified shipping promise' not in str(results)
     assert 'shipping' in results[0]['caveat'].lower()
 
+
+def test_unverified_apparel_variant_hides_numeric_ai_match():
+    slots,fallback,choices=fixtures()
+    proposals=BundleRecommendations(recommendations=[proposal(choices,fit_score=92)])
+    results,_=validate_recommendations(proposals,slots,30000,'USD','workspace',['size M'],fallback,time.time())
+    assert results[0]['variant_status']=='unverified'
+    assert results[0]['fit_score'] is None
+    assert results[0]['ai_confidence_score'] is None
+
 @pytest.mark.parametrize('change',[
     {'fit_score':101},{'ai_confidence_score':-1},{'score_breakdown':{'fit':101}},{'price_cents':1},
 ])

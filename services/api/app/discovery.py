@@ -1,5 +1,5 @@
 """Channel3 v1, verified against @channel3/skills 1.0.0 API reference."""
-import os,time,threading,re,contextvars
+import os,time,threading,re,contextvars,logging
 from decimal import Decimal
 from typing import Any
 from urllib.parse import urlparse
@@ -124,21 +124,26 @@ def price_history(id,days=90):
     try:
         data=Channel3(api_key=key,timeout=15,max_retries=0).price_tracking.retrieve_history(id,days=days)
     except Exception:
+        logging.getLogger(__name__).exception('Channel3 price history retrieval failed for product %s',id)
         return {'available':False,'reason':'Price history is unavailable for this product.'}
-    stats=data.statistics
-    if not stats or not data.history:
-        return {'available':False,'reason':'No observed price history is available for this product.'}
-    values=[{'at':point.timestamp.isoformat(),'price_cents':exact_cents(Decimal(str(point.price))),
-             'currency':point.currency} for point in data.history if exact_cents(Decimal(str(point.price))) is not None]
-    if not values:return {'available':False,'reason':'No usable price history is available.'}
-    return {'available':True,'observations':values[-90:],'statistics':{
-        'minimum_cents':round(Decimal(str(stats.min_price))*100),
-        'maximum_cents':round(Decimal(str(stats.max_price))*100),
-        'mean_cents':round(Decimal(str(stats.mean))*100),
-        'current_cents':round(Decimal(str(stats.current_price))*100),
-        'std_dev_cents':round(Decimal(str(stats.std_dev))*100),
-        'classification':stats.current_status,'currency':stats.currency},
-        'source':'Channel3 observed history','as_of':values[-1]['at']}
+    try:
+        stats=data.statistics
+        if not stats or not data.history:
+            return {'available':False,'reason':'No observed price history is available for this product.'}
+        values=[{'at':point.timestamp.isoformat(),'price_cents':exact_cents(Decimal(str(point.price))),
+                 'currency':point.currency} for point in data.history if exact_cents(Decimal(str(point.price))) is not None]
+        if not values:return {'available':False,'reason':'No usable price history is available.'}
+        return {'available':True,'observations':values[-90:],'statistics':{
+            'minimum_cents':round(Decimal(str(stats.min_price))*100),
+            'maximum_cents':round(Decimal(str(stats.max_price))*100),
+            'mean_cents':round(Decimal(str(stats.mean))*100),
+            'current_cents':round(Decimal(str(stats.current_price))*100),
+            'std_dev_cents':round(Decimal(str(stats.std_dev))*100),
+            'classification':stats.current_status,'currency':stats.currency},
+            'source':'Channel3 observed history','as_of':values[-1]['at']}
+    except Exception:
+        logging.getLogger(__name__).exception('Channel3 price history data could not be normalized for product %s',id)
+        return {'available':False,'reason':'Usable price history is unavailable for this product.'}
 
 def advanced_search(body:AdvancedSearch):
     if body.min_price is not None and body.max_price is not None and body.min_price>body.max_price:

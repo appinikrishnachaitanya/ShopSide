@@ -1,4 +1,5 @@
 """Validate untrusted model proposals against server-owned retailer offers."""
+import re
 from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field
 from .smart_bundle import item_for, make_bundle
@@ -69,7 +70,13 @@ def validate_recommendations(proposals,slots,budget,currency,goal,preferences,fa
         seen.add(bundle['id'])
         # Free-form claims cannot safely be verified by token overlap. Show only
         # independently derived facts and keep the numeric model assessment.
-        bundle.update(rank=proposal.rank,fit_score=proposal.fit_score,ai_confidence_score=proposal.ai_confidence_score,
-                      evidence_confidence=evidence_level(items,now),score_breakdown=proposal.score_breakdown)
+        variant_unverified=any(
+            any(re.search(r'\b(?:size|colour|color)\b',str(value),re.I)
+                for value in item.get('unverified_constraints',[]))
+            for item in bundle['items'])
+        bundle.update(rank=proposal.rank,fit_score=None if variant_unverified else proposal.fit_score,
+                      ai_confidence_score=None if variant_unverified else proposal.ai_confidence_score,
+                      variant_status='unverified' if variant_unverified else 'not_requested',
+                      evidence_confidence=evidence_level(items,now),score_breakdown={} if variant_unverified else proposal.score_breakdown)
         valid.append(bundle)
     return sorted(valid,key=lambda b:b['rank']),failures

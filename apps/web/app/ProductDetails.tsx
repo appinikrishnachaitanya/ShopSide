@@ -81,7 +81,9 @@ export default function ProductDetails({
     setLoading(true);setError("");
     try{
       const response=await sessionFetch(`/api/rooms/${room.id}/products/${encodeURIComponent(product.provider_id)}/${kind}`);
-      const value=await response.json();if(!response.ok)throw Error(value.detail||"Could not load product evidence.");
+      const value=await response.json().catch(()=>null);
+      if(!response.ok)throw Error(value?.detail||"Price or seller data is temporarily unavailable. Please retry.");
+      if(!value)throw Error("Price or seller data is temporarily unavailable. Please retry.");
       if(kind==="seller-lens"){setLens(value);setDetail(value.product)}else setHistory(value);
     }catch(e:any){setError(e.message)}finally{setLoading(false)}
   }

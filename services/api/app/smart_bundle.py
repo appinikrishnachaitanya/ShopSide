@@ -22,7 +22,7 @@ def category_matches(requirement, product):
     if not meaningful:
         return False
     known={'sofa','couch','loveseat','chair','desk','table','bed','lamp','keyboard','mouse','mice','monitor',
-           'shirt','pant','trouser','jean','shoe','sneaker','watch','necklace','earring','bracelet','ring',
+           'shirt','pant','trouser','jean','chino','shoe','sneaker','watch','necklace','earring','bracelet','ring',
            'laptop','headphone','speaker','controller','console','case','charger','shelf','rug','bag'}
     nouns=[w.rstrip('s') for w in meaningful if w.rstrip('s') in known]
     head = nouns[-1] if nouns else meaningful[-1].rstrip('s')
@@ -30,7 +30,8 @@ def category_matches(requirement, product):
                 'chair': ['chair'], 'desk': ['desk'], 'table': ['table'],
                 'bed': ['bed'], 'lamp': ['lamp'], 'keyboard': ['keyboard'], 'mouse': ['mouse','mice'],
                 'shoe':['shoe','sneaker','footwear'],'sneaker':['shoe','sneaker','footwear'],
-                'pant':['pant','trouser','jean'],'trouser':['pant','trouser','jean'],'jean':['pant','trouser','jean'],
+                'pant':['pant','trouser','jean','chino'],'trouser':['pant','trouser','jean','chino'],
+                'jean':['pant','trouser','jean'],'chino':['chino','pant','trouser'],
                 'headphone':['headphone','headset'],'earring':['earring'],'necklace':['necklace']}
     allowed = synonyms.get(head, [head])
     name = str(product.get('name') or '').lower()
@@ -40,6 +41,8 @@ def category_matches(requirement, product):
     if head=='chair' and re.search(r'\b(?:office|ergonomic|task|desk)\b',requirement,re.I):
         if re.search(r'\b(?:dining|patio|outdoor|bar\s*stool|accent)\b',name+' '+category):
             return False
+    if head in ('pant','trouser','jean','chino') and re.search(r'\b(?:shorts?|capris?|skorts?)\b',name+' '+category):
+        return False
     return any(re.search(r'\b'+re.escape(term)+r's?\b',name+' '+category) for term in allowed)
 
 
