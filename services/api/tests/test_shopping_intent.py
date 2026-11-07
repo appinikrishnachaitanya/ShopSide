@@ -7,13 +7,9 @@ from app.main import app
 def test_ai_interpretation_is_shared_and_creates_move_in_context(monkeypatch):
     import app.main as main
     output={'shopping_goal':'Furnish bedroom','product_requirements':['bed','lamp'],'budget_cents':100000,'currency':'USD','style':'minimalist','constraints':['small room'],'shopping_context':'move_in','participant_count':2,'bundle_requested':True,'follow_up':'What bed size?'}
-    class Models:
-        def generate_content(self,**kwargs):return SimpleNamespace(text=json.dumps(output))
-    class Client:
-        models=Models()
-        def close(self):pass
-    monkeypatch.setattr(main,'configured_client',lambda:Client())
-    monkeypatch.setenv('GEMINI_MODEL','test-model')
+    from app.shopping_intent import ShoppingIntent
+    async def interpret(_text,schema):return ShoppingIntent.model_validate(output)
+    monkeypatch.setattr(main,'interpret_with_adk',interpret)
     a,b=TestClient(app),TestClient(app)
     created=a.post('/api/rooms',json={'name':'Alex','initial_request':'We are moving and need a bed and lamp under $1000'}).json()
     base='/api/rooms/'+created['room']['id']
@@ -26,7 +22,7 @@ def test_ai_interpretation_is_shared_and_creates_move_in_context(monkeypatch):
     assert shared['move_in']['question']=='What bed size?'
 
 
-def test_bundle_uses_real_observed_prices_and_total_budget(monkeypatch):
+def test_bundle_uses_real_observed_prices_and_total_budget(monkeypatch,mock_bundle_runner):
     import app.main as main
     import time
     client=TestClient(app)

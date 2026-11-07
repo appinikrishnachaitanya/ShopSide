@@ -1,5 +1,5 @@
 """Channel3 v1, verified against @channel3/skills 1.0.0 API reference."""
-import os,time,threading,re
+import os,time,threading,re,contextvars
 from decimal import Decimal
 from typing import Any
 from urllib.parse import quote,urlparse
@@ -44,9 +44,12 @@ class Product(BaseModel):
     key_features:list[str]|None=None
 def safe_url(value):
     return value if urlparse(value).scheme=='https' else None
+def exact_cents(value):
+    cents=value*100
+    return int(cents) if cents==cents.to_integral_value() else None
 def normalize(raw):
     p=Product.model_validate(raw)
-    return dict(id='channel3:'+p.id,provider_id=p.id,name=p.title,description=p.description,provenance='channel3',retrieved_at=time.time(),image=next((safe_url(i.url) for i in p.images if safe_url(i.url)),None),offers=[dict(retailer=o.domain,url=safe_url(o.url),price_cents=int(o.price.price*100),currency=o.price.currency,availability=o.availability,variant=None,condition=o.condition,dimensions=o.dimensions,delivery=o.delivery or o.shipping,checkout='retailer') for o in p.offers if safe_url(o.url)],attributes=p.structured_attributes or {},variants=p.variants,key_features=p.key_features or [],merchant_offer=None)
+    return dict(id='channel3:'+p.id,provider_id=p.id,name=p.title,description=p.description,provenance='channel3',retrieved_at=time.time(),image=next((safe_url(i.url) for i in p.images if safe_url(i.url)),None),offers=[dict(retailer=o.domain,url=safe_url(o.url),price_cents=exact_cents(o.price.price),currency=o.price.currency,availability=o.availability,variant=None,condition=o.condition,dimensions=o.dimensions,delivery=o.delivery or o.shipping,checkout='retailer') for o in p.offers if safe_url(o.url)],attributes=p.structured_attributes or {},variants=p.variants,key_features=p.key_features or [],merchant_offer=None)
 
 def relevant_results(query, products):
     """Exclude obvious sofa accessories when the shopper asks for seating."""
@@ -55,6 +58,14 @@ def relevant_results(query, products):
     accessory=re.compile(r'\b(?:nightstands?|end\s+tables?|side\s+tables?|coffee\s+tables?|console\s+tables?|sofa\s+tables?|slipcovers?|sofa\s+covers?)\b', re.I)
     return [p for p in products if not accessory.search(p['name'])]
 cache={}; guard=threading.Lock()
+class Channel3Budget:
+    """Counts real HTTP attempts across threads, including transient retries."""
+    def __init__(self,limit=10):self.limit=limit;self.count=0;self.lock=threading.Lock()
+    def claim(self):
+        with self.lock:
+            if self.count>=self.limit:raise HTTPException(503,'Channel3 request limit reached')
+            self.count+=1
+channel3_budget=contextvars.ContextVar('channel3_budget',default=None)
 def request(path,payload=None):
     key=os.getenv('CHANNEL3_API_KEY')
     if not key: raise HTTPException(503,'Live discovery unavailable — configure Channel3')
@@ -62,15 +73,18 @@ def request(path,payload=None):
     with guard:
         cached=cache.get(identity)
         if cached and time.monotonic()-cached[0]<30:return cached[1]
-        try:
-            with httpx.Client(timeout=15) as client:
-                for attempt in range(2):
-                    response=client.request('POST' if payload else 'GET','https://api.trychannel3.com'+path,json=payload,headers={'x-api-key':key})
-                    if response.status_code not in [429,502,503,504] or attempt:break
-                    time.sleep(.25)
-                response.raise_for_status(); data=response.json()
-                cache[identity]=(time.monotonic(),data);return data
-        except (httpx.HTTPError,ValueError) as exc: raise HTTPException(502,'Channel3 request failed; retry later') from exc
+    try:
+        budget=channel3_budget.get()
+        with httpx.Client(timeout=10 if budget else 15) as client:
+            for attempt in range(2):
+                if budget:budget.claim()
+                response=client.request('POST' if payload else 'GET','https://api.trychannel3.com'+path,json=payload,headers={'x-api-key':key})
+                if response.status_code not in [429,502,503,504] or attempt:break
+                time.sleep(.25)
+            response.raise_for_status(); data=response.json()
+            with guard:cache[identity]=(time.monotonic(),data)
+            return data
+    except (httpx.HTTPError,ValueError) as exc: raise HTTPException(502,'Channel3 request failed; retry later') from exc
 def search_products(query,max_price=None):
     body={'query':query,'limit':12}
     if max_price is not None:body['filters']={'price':{'max_price':max_price}}

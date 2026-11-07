@@ -11,6 +11,7 @@ import Recommendations from "./Recommendations";
 import Concierge from "./Concierge";
 import ProductDetails from "./ProductDetails";
 import WorkspaceOverlay from "./WorkspaceOverlay";
+import SmartBundle from "./SmartBundle";
 import AssistantMessage from "./AssistantMessage";
 import {
   ArrowRight,
@@ -79,7 +80,6 @@ export default function Home() {
   const [pendingFocus, setPendingFocus] = useState<string | null>(null);
   const [catalogQuery, setCatalogQuery] = useState("");
   const [searching, setSearching] = useState(false);
-  const [bundleSearching, setBundleSearching] = useState(false);
   const [orderRef, setOrderRef] = useState("");
   const [paymentBusy, setPaymentBusy] = useState(false);
   const [paypalReady, setPaypalReady] = useState(false);
@@ -623,7 +623,7 @@ export default function Home() {
               <div className="workspace-panel" aria-label="Discover products">
               {initialMissionLoading && <p role="status">Understanding your shopping goal…</p>}
               {room.shopping_intent?.shopping_goal && <div className="bundle-panel"><strong>Your shopping goal</strong><p>{room.shopping_intent.shopping_goal}</p>{room.shopping_intent.follow_up && <p>{room.shopping_intent.follow_up}</p>}</div>}
-              {room.shopping_intent?.bundle_requested && <section className="bundle-panel" aria-label="Bundle ideas"><h3>Explore a bundle together</h3><p>Looking for: {(room.shopping_intent.product_requirements || []).join(" · ") || "Add product requirements to your goal"}. Prices are observed retailer prices; compatibility, shipping and availability must be checked.</p><button type="button" disabled={!online || bundleSearching} onClick={async()=>{setBundleSearching(true);try{await api("rooms/"+room.id+"/bundle/search",{});E("");}catch(e:any){E(e.message);}finally{setBundleSearching(false);}}}>{bundleSearching ? "Finding combinations…" : "Find combinations"}</button>{Array.isArray(room.bundle_options) && (room.bundle_options.length ? room.bundle_options.map((option:any,i:number)=><div className="bundle-option" key={i}><strong>{option.currency} {(option.total_cents/100).toFixed(2)} observed total</strong><span>{option.products.map((id:string)=>all.find((item:any)=>item.id===id)?.name || "Product").join(" + ")}</span></div>) : <p>No combinations found within the budget. Try a broader search.</p>)}</section>}
+              <SmartBundle room={room} me={me} online={online} selectProduct={focusProduct} />
               <div className="discovery">
                 <div className="section-heading">
                   <div>
@@ -996,6 +996,7 @@ export default function Home() {
               )}
               </div>
               <div className="workspace-panel" hidden={workspaceView!=="plan"} aria-label="Shopping plan">
+                {room.smart_bundle?.saved && <section className="saved-bundle"><h3>Saved bundle</h3><p>{room.smart_bundle.saved.items.map((item:any)=>item.product.name).join(" + ")}</p><strong>{room.smart_bundle.saved.currency} {(room.smart_bundle.saved.subtotal_cents/100).toFixed(2)} observed · {room.smart_bundle.saved.currency} {(room.smart_bundle.saved.remaining_cents/100).toFixed(2)} remaining</strong><p>Saved retailer offers are snapshots; verify current prices, shipping and availability.</p>{room.smart_bundle.saved.items.map((item:any)=><a key={item.slot_id} href={item.offer.url} target="_blank" rel="noopener noreferrer">{item.product.name} · {item.offer.retailer} ↗</a>)}</section>}
                 {room.mode === "move_in" ? <><MoveIn room={room} online={online} me={me} api={api} initialLoading={initialMissionLoading} onResults={()=>setWorkspaceView("discover")} /><MemoryReceipt room={room} online={online} /></> : <><Concierge room={room} online={online} /><button type="button" disabled={!online} onClick={async()=>{try{await api("rooms/"+room.id+"/home-plan",{});E("");}catch(e:any){E(e.message);}}}>Set up home planning</button></>}
               </div>
               <div className="workspace-panel" hidden={workspaceView!=="room"} aria-label="Room view">

@@ -1,5 +1,10 @@
 from app.discovery import AdvancedSearch, advanced_search, search_products
 
+def test_fractional_cents_are_not_silently_rounded():
+    from app.discovery import normalize
+    item=normalize({'id':'desk','title':'Desk','offers':[{'url':'https://shop.example/item','domain':'shop.example','price':{'price':'12.345','currency':'USD'}}]})
+    assert item['offers'][0]['price_cents'] is None
+
 
 def test_sofa_search_filters_accessories_but_preserves_deliberate_table_search(monkeypatch):
     products = [

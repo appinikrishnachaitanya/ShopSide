@@ -157,7 +157,7 @@ export default function ProductDetails({
               <p key={i}>
                 <a href={offer.url} target="_blank" rel="noopener noreferrer">
                   {offer.retailer} · {offer.currency}{" "}
-                  {(offer.price_cents / 100).toFixed(2)} ↗
+                  {offer.price_cents == null ? 'Price unavailable' : (offer.price_cents / 100).toFixed(2)} ↗
                 </a>{" "}
                 · {offer.availability || "Availability unknown"}
                 {offer.condition ? " · " + offer.condition : ""}
