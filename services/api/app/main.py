@@ -36,11 +36,9 @@ catalog = [dict(id=str(i), name=n, price=p, currency='USD', description='Fiction
 for i,(name,price,category) in enumerate([('Home Office Desk Lamp',3900,'home office'),('Everyday Cookware Set',7900,'kitchen'),('Compact Storage Shelf',5900,'living room'),('Soft Cotton Bedding Set',6900,'bedroom')],start=11):
     catalog.append(dict(id=str(i),name=name,price=price,currency='USD',category=category,image='/products/home-essentials.svg',variant='standard',stock=20,attributes={},evidence='Fictional sandbox merchant product; no goods ship.',description='Fictional home essential · sandbox merchant'))
 for product in catalog:
-    if int(product['id']) >= 11:
-        pass
-    elif int(product['id']) >= 8:
+    if 8 <= int(product['id']) < 11:
         product.update(category='luggage',image='/products/luggage.svg',description='Fictional sample luggage · sandbox inventory',variant='standard',stock=20,attributes={'weight':None,'capacity':None,'color':'Sage'},evidence='Fictional fixture; weight and capacity are unknown.')
-    else:
+    elif int(product['id']) < 8:
         product.update(category='headphones',variant='standard',stock=20,attributes={'microphone_quality':None,'connection':'Bluetooth','color':'Sage'},evidence='Fictional fixture specification; no measured microphone data.')
 db.execute('CREATE TABLE IF NOT EXISTS inventory(product TEXT, variant TEXT, stock INTEGER NOT NULL, PRIMARY KEY(product,variant))')
 for product in catalog:
@@ -1085,3 +1083,230 @@ async def provider_product_action(r:str,action:str,body:ProviderProductAction,re
             current.update({p['id']:p for p in result});state['discovery']=list(current.values())
         state['commands'].append(body.command_id);state['revision']+=1;save(r,state)
     return {'ok':True,'count':len(result) if action in ('similar','cheaper') else None}
+
+# Consented merchant opportunities are separate from checkout and buyer approvals.
+from . import merchant as merchant_service
+from .merchant_agent import OfferProposal
+merchant_service.setup(db)
+
+@app.get('/api/merchant/me')
+def merchant_me(request:Request):
+    merchant_id,_=merchant_service.merchant_auth(db,request)
+    with lock:
+        m=merchant_service.merchant(db,merchant_id)
+        ops=[merchant_service.read(row) for row in db.execute('SELECT state FROM merchant_opportunities WHERE merchant_id=?',(merchant_id,)).fetchall()]
+        public_ops=[{key:value for key,value in op.items() if key not in ('room_id','demand_key')} for op in ops]
+        return {'merchant':m,'products':merchant_service.product_rows(db,merchant_id),'opportunities':public_ops,
+            'metrics':{'new_opportunities':sum(o['status']=='MERCHANT_NOTIFIED' for o in ops),
+                'active_negotiations':sum(o['status'] in ('OFFER_PROPOSED','HUMAN_REVIEW','OFFER_PUBLISHED','COUNTERED') for o in ops),
+                'accepted_deals':sum(o['status']=='ACCEPTED' for o in ops),'confirmed_orders':0}}
+
+@app.post('/api/merchant/config')
+def merchant_config(body:merchant_service.MerchantPolicyUpdate,request:Request):
+    merchant_id,actor=merchant_service.merchant_auth(db,request)
+    with lock:
+        m=merchant_service.merchant(db,merchant_id)
+        changes=body.model_dump(exclude_unset=True)
+        if any(value is None for value in changes.values()):raise HTTPException(422,'Policy fields cannot be null')
+        for field in ('name','agent_name','opt_in','active','mode'):
+            if field in changes:m[field]=changes.pop(field)
+        m['policy'].update(changes)
+        m.setdefault('activity',[]).append({'event':'policy_updated','actor':actor,'at':merchant_service.now()})
+        merchant_service.put(db,'merchants',merchant_id,m)
+        return m
+
+@app.get('/api/merchant/products/search')
+def merchant_product_search(request:Request,query:str):
+    merchant_id,_=merchant_service.merchant_auth(db,request)
+    if not query.strip() or len(query)>100:raise HTTPException(422,'Enter a short product search')
+    # Public catalog search, bounded and attributed. The merchant connects a specific retailer domain.
+    return {'products':search_products(query)[:8],'merchant_id':merchant_id}
+
+@app.post('/api/merchant/products/refresh')
+def merchant_refresh_products(request:Request):
+    merchant_id,_=merchant_service.merchant_auth(db,request)
+    refreshed=[]
+    with lock:
+        for mapping in merchant_service.product_rows(db,merchant_id)[:20]:
+            current=merchant_service.current_product(mapping)
+            db.execute('UPDATE merchant_products SET state=? WHERE merchant_id=? AND product_id=?',
+                (json.dumps(current),merchant_id,mapping['product_id']))
+            refreshed.append(current)
+        db.commit()
+    return {'products':refreshed}
+
+@app.post('/api/merchant/products')
+def merchant_connect_product(body:merchant_service.ConnectProduct,request:Request):
+    merchant_id,_=merchant_service.merchant_auth(db,request)
+    with lock:
+        product=product_details(body.product_id.removeprefix('channel3:'))
+        allowed=merchant_service.merchant(db,merchant_id).get('verified_domain')
+        if not allowed or allowed.lower()!=body.domain.lower():raise HTTPException(403,'Merchant domain must be verified by the operator')
+        offer=next((o for o in product['offers'] if o.get('retailer','').lower()==body.domain.lower()),None)
+        if not offer:raise HTTPException(422,'This Channel3 product has no offer from that domain')
+        # Connecting a public listing does not authorize selling it. Sandbox merchants may
+        # connect references as evidence, but quotes still require explicit merchant policy.
+        mapping={'merchant_id':merchant_id,'product_id':body.product_id,'domain':body.domain.lower(),
+            'category':body.category,'verified_at':merchant_service.now(),'status':'current',
+            'observed':{'name':product['name'],'price_cents':offer['price_cents'],'currency':offer['currency'],
+                'availability':offer['availability'],'url':offer['url'],'retrieved_at':product['retrieved_at']}}
+        db.execute('INSERT INTO merchant_products VALUES(?,?,?) ON CONFLICT(merchant_id,product_id) DO UPDATE SET state=excluded.state',
+            (merchant_id,body.product_id,json.dumps(mapping)));db.commit()
+        return mapping
+
+class SellerConsent(BaseModel):
+    enabled:bool
+    command_id:str=Field(min_length=8,max_length=100)
+
+@app.post('/api/rooms/{r}/seller-offers/consent')
+def seller_consent(r:str,body:SellerConsent,request:Request):
+    with lock:
+        actor=auth(r,request);s=load(r)
+        if actor!=s['payer']:raise HTTPException(403,'Only the room creator controls seller offers')
+        existing=s.get('seller_offers') or {}
+        if body.command_id in s.get('commands',[]):return public_room_state(s)
+        if body.enabled:
+            if existing.get('enabled'):return public_room_state(s)
+            s['seller_offers']={'enabled':True,'demand_key':secrets.token_urlsafe(12),'expires_at':merchant_service.now()+3600,'status':'waiting'}
+        else:
+            s['seller_offers']={'enabled':False,'status':'off'}
+            s.pop('seller_agent',None)
+            for offer in s.get('flash_offers',[]):
+                if offer['status'] not in ('ACCEPTED','DECLINED','EXPIRED'):offer['status']='CANCELLED'
+            for row in db.execute('SELECT state FROM merchant_opportunities WHERE room_id=?',(r,)).fetchall():
+                op=merchant_service.read(row)
+                if op['status'] not in merchant_service.TERMINAL:
+                    op['status']='CANCELLED';merchant_service.audit(op,'buyer_consent_revoked',actor);merchant_service.save_op(db,op)
+        s.setdefault('commands',[]).append(body.command_id);s['revision']+=1;save(r,s)
+        return public_room_state(s)
+
+@app.post('/api/rooms/{r}/seller-offers/request')
+def request_seller_offers(r:str,request:Request):
+    with lock:
+        actor=auth(r,request);s=load(r)
+        if actor!=s['payer']:raise HTTPException(403,'Only the room creator can request seller offers')
+        if not s.get('seller_offers',{}).get('enabled'):raise HTTPException(409,'Enable seller offers first')
+        ids=merchant_service.match(db,r,s,notify)
+        s['seller_offers']['status']='matched' if ids else 'waiting'
+        s['seller_offers']['match_count']=len(ids);s['revision']+=1;save(r,s)
+        return {'opportunity_count':len(ids),'status':s['seller_offers']['status']}
+
+@app.post('/api/merchant/opportunities/{op_id}/action')
+async def merchant_opportunity_action(op_id:str,body:merchant_service.DealRequest,request:Request):
+    merchant_id,actor=merchant_service.merchant_auth(db,request)
+    with lock:
+        op=merchant_service.scoped_opportunity(db,merchant_id,op_id);m=merchant_service.merchant(db,merchant_id)
+        if body.command_id in op.get('commands',[]):return {'opportunity':op,'duplicate':True}
+        if op['status'] in merchant_service.TERMINAL:raise HTTPException(409,'Opportunity closed')
+        if body.action in ('decline','close','reject'):
+            op['status']='DECLINED' if body.action!='reject' else 'OFFER_PROPOSED';op.pop('pending',None)
+            merchant_service.audit(op,body.action,actor);op.setdefault('commands',[]).append(body.command_id);merchant_service.save_op(db,op)
+            return {'opportunity':op}
+        if body.action=='approve':
+            if op['status']!='HUMAN_REVIEW' or not op.get('pending'):raise HTTPException(409,'No proposal requires review')
+            pending=op['pending'];proposal=OfferProposal(product_id=pending['product_id'],price_cents=pending['price_cents'],explanation=pending['explanation'])
+            s=load(op['room_id']);result=merchant_service.publish(db,s,op,m,proposal,actor,notify,human=True)
+            merchant_service.audit(op,'human_approved',actor);merchant_service.save_op(db,op);s['revision']+=1;save(op['room_id'],s)
+            return result
+        if body.action!='generate':raise HTTPException(422,'Unknown action')
+        if not m['opt_in'] or not m['active']:raise HTTPException(409,'Merchant agent is paused or opted out')
+        products=[p for p in merchant_service.product_rows(db,merchant_id) if p['product_id']==op['product_id']]
+        if not products:raise HTTPException(409,'Merchant product mapping missing')
+    if body.price_cents is None:
+        try:proposal,trace=await merchant_service.propose(m,{'id':op['id'],**op['demand'],'counter_price_cents':op.get('counter_price_cents')},products,merchant_service.market_context(products))
+        except Exception as exc:raise HTTPException(503,'Merchant AI unavailable; submit a manual proposal') from exc
+    else:
+        proposal=OfferProposal(product_id=op['product_id'],price_cents=body.price_cents,explanation=body.explanation or 'A merchant proposal for your shopping goal.')
+        trace={'model_calls':0,'tools':[],'outcome':'merchant_proposed'}
+    with lock:
+        op=merchant_service.scoped_opportunity(db,merchant_id,op_id);m=merchant_service.merchant(db,merchant_id)
+        s=load(op['room_id']);result=merchant_service.publish(db,s,op,m,proposal,actor,notify)
+        op['agent_trace']=trace;op.setdefault('commands',[]).append(body.command_id);merchant_service.save_op(db,op)
+        if result.get('quote'):s['revision']+=1;save(op['room_id'],s)
+        return result
+
+@app.post('/api/rooms/{r}/seller-offers/action')
+def buyer_deal_action(r:str,body:merchant_service.BuyerDealAction,request:Request):
+    with lock:
+        actor=auth(r,request);s=load(r)
+        if body.command_id in s.get('commands',[]):return public_room_state(s)
+        if actor!=s['payer'] and body.action in ('invite','remove'):raise HTTPException(403,'Only the room creator controls seller invitations')
+        quote=next((x for x in s.get('flash_offers',[]) if x['id']==body.offer_id),None)
+        if not quote:raise HTTPException(404,'Offer not found')
+        op=merchant_service.scoped_opportunity(db,quote['merchant_id'],quote['opportunity_id'])
+        if body.action=='remove':
+            s.pop('seller_agent',None)
+            s.setdefault('commands',[]).append(body.command_id);s['revision']+=1;save(r,s)
+            return public_room_state(s)
+        if not s.get('seller_offers',{}).get('enabled') or s['seller_offers']['demand_key']!=op['demand_key']:
+            raise HTTPException(409,'Buyer consent revoked')
+        if quote['expires_at']<=merchant_service.now():
+            quote['status']='EXPIRED';op['status']='EXPIRED';merchant_service.save_op(db,op);save(r,s)
+            raise HTTPException(409,'Offer expired')
+        if body.action=='invite':
+            s['seller_agent']={'merchant_id':quote['merchant_id'],'name':quote['agent_name'],'opportunity_id':op['id'],'invited_by':actor,'since':merchant_service.now()}
+        elif quote['status'] not in ('OFFER_PUBLISHED','COUNTERED'):raise HTTPException(409,'Offer is no longer active')
+        elif body.action=='accept':
+            quote['status']='ACCEPTED';op['status']='ACCEPTED';merchant_service.audit(op,'accepted',actor)
+        elif body.action=='dismiss':
+            quote['status']='DECLINED';op['status']='DECLINED';merchant_service.audit(op,'dismissed',actor)
+        elif body.action=='counter':
+            m=merchant_service.merchant(db,quote['merchant_id'])
+            if op['counter_count']>=m['policy']['max_counteroffers']:raise HTTPException(409,'Counteroffer limit reached')
+            if body.price_cents is None:raise HTTPException(422,'Counteroffer price required')
+            op['counter_count']+=1;op['status']='COUNTERED';quote['status']='COUNTERED'
+            op['counter_price_cents']=body.price_cents;merchant_service.audit(op,'countered',actor,price_cents=body.price_cents)
+            job_id=op['id']+'-counter-'+str(op['counter_count'])
+            merchant_service.put(db,'merchant_jobs',job_id,{'id':job_id,'opportunity_id':op['id'],'status':'pending','attempts':0,'next_at':merchant_service.now()})
+        if op.get('offer',{}).get('id')==quote['id']:op['offer']=quote
+        op.setdefault('commands',[]).append(body.command_id);merchant_service.save_op(db,op)
+        s.setdefault('commands',[]).append(body.command_id);s['revision']+=1;save(r,s)
+        return public_room_state(s)
+
+@app.post('/api/internal/merchant-jobs/process')
+async def process_merchant_jobs(request:Request):
+    """Call from authenticated Cloud Scheduler; rows survive instance restarts."""
+    secret=os.getenv('MERCHANT_JOB_TOKEN')
+    if not secret or not secrets.compare_digest(request.headers.get('x-merchant-job-token',''),secret):raise HTTPException(403,'Job token required')
+    results=[]
+    with lock:
+        candidates=[merchant_service.read(row) for row in db.execute('SELECT state FROM merchant_jobs').fetchall()]
+        candidates=[job for job in candidates if job['status'] in ('pending','running') and job['next_at']<=merchant_service.now()][:10]
+    for candidate in candidates:
+        with lock:
+            job=merchant_service.read(db.execute('SELECT state FROM merchant_jobs WHERE id=?',(candidate['id'],)).fetchone())
+            if not job or job['status'] not in ('pending','running') or job['next_at']>merchant_service.now():continue
+            op_row=db.execute('SELECT state FROM merchant_opportunities WHERE id=?',(job['opportunity_id'],)).fetchone()
+            op=merchant_service.read(op_row)
+            if not op or op['status'] in merchant_service.TERMINAL or op['demand']['expires_at']<=merchant_service.now():
+                job['status']='done';merchant_service.put(db,'merchant_jobs',job['id'],job)
+                if op and op['status'] not in merchant_service.TERMINAL:
+                    op['status']='EXPIRED';merchant_service.save_op(db,op)
+                continue
+            m=merchant_service.merchant(db,op['merchant_id'])
+            products=[p for p in merchant_service.product_rows(db,m['id']) if p['product_id']==op['product_id']]
+            if not m['opt_in'] or not m['active'] or not products:
+                job['status']='done';merchant_service.put(db,'merchant_jobs',job['id'],job)
+                continue
+            if m['mode']!='automatic' or m['policy']['minimum_price_cents'] is None:
+                job['status']='done';merchant_service.put(db,'merchant_jobs',job['id'],job)
+                results.append({'id':op['id'],'status':'merchant_review'})
+                continue
+            job['status']='running';job['attempts']+=1;job['next_at']=merchant_service.now()+60
+            merchant_service.put(db,'merchant_jobs',job['id'],job)
+        try:
+            proposal,trace=await merchant_service.propose(m,{'id':op['id'],**op['demand'],'counter_price_cents':op.get('counter_price_cents')},products,merchant_service.market_context(products))
+            with lock:
+                fresh=merchant_service.scoped_opportunity(db,m['id'],op['id']);room=load(fresh['room_id'])
+                outcome=merchant_service.publish(db,room,fresh,merchant_service.merchant(db,m['id']),proposal,'merchant_ai',notify)
+                fresh['agent_trace']=trace;merchant_service.save_op(db,fresh)
+                if outcome.get('quote'):room['revision']+=1;save(fresh['room_id'],room)
+                job['status']='done';merchant_service.put(db,'merchant_jobs',job['id'],job)
+                results.append({'id':op['id'],'status':'published' if outcome.get('quote') else 'human_review'})
+        except Exception:
+            with lock:
+                job['status']='pending' if job['attempts']<2 else 'failed'
+                job['next_at']=merchant_service.now()+60
+                merchant_service.put(db,'merchant_jobs',job['id'],job)
+                results.append({'id':op['id'],'status':job['status']})
+    return {'results':results}

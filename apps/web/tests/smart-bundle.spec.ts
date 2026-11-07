@@ -14,6 +14,7 @@ test('two shoppers select, swap, save and approve the same bundle',async({browse
  await bundle.getByRole('button',{name:'Approve bundle'}).click();await other.getByRole('button',{name:'Approve bundle'}).click();
  await expect(bundle.getByText('Everyone approved this bundle')).toBeVisible();
  await bundle.getByRole('button',{name:'Save to shared plan'}).click();
+ await expect(first.getByText('1 saved bundle')).toBeVisible();
  await bundle.getByRole('button',{name:/Swap.*chair/}).click();
  await bundle.getByRole('button',{name:'Find more alternatives with AI'}).click();
  await expect(bundle.locator('.bundle-alternative').filter({hasText:'New chair'})).toBeVisible();

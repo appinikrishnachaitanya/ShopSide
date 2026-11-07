@@ -113,6 +113,13 @@ def build_bundles(slots, budget, currency, goal, preferences=None):
     match_choice=min(valid,key=lambda v:(-v[2],v[1]))
     one_seller=[v for v in valid if len({x['offer']['retailer'] for x in v[0]})==1]
     winners=[('best_match',match_choice),('budget_saver',budget_choice)]
+    # When every product has the same observed match evidence, the cheapest
+    # combination wins both labels. Offer a genuinely different product mix if
+    # one is eligible, without pretending that its higher price means better fit.
+    primary_products=tuple(item['product']['id'] for item in match_choice[0])
+    different=[v for v in valid if tuple(item['product']['id'] for item in v[0])!=primary_products]
+    if different and primary_products==tuple(item['product']['id'] for item in budget_choice[0]):
+        winners.append(('alternative',min(different,key=lambda v:(v[1],-v[2]))))
     if one_seller:winners.append(('one_seller',min(one_seller,key=lambda v:(v[1],-v[2]))))
     result=[];seen={}
     for kind,(items,_,_) in winners:

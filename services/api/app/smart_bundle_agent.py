@@ -177,7 +177,14 @@ async def run_bundle_agent(intent, budget, currency, search, progress, max_model
             elif option['kind'] not in labels:
                 option['evidence_confidence']=evidence_level(option['items'],time.time())
                 validated.append(option);seen.add(option['id']);labels.add(option['kind'])
-        result['options']=validated[:3]
+        selected=validated[:3]
+        alternative=next((item for item in fallback if item['kind']=='alternative'),None)
+        def product_mix(item):
+            return tuple(part['product']['id'] for part in item['items'])
+        if alternative and selected and all(product_mix(item)==product_mix(selected[0]) for item in selected) and alternative['id'] not in {item['id'] for item in selected}:
+            alternative['evidence_confidence']=evidence_level(alternative['items'],time.time())
+            selected=selected[:2]+[alternative] if len(selected)>=3 else selected+[alternative]
+        result['options']=selected
         observed_offers=sum(len(p.get('offers') or []) for batch in batches for p in batch)
         retained_offers=sum(len(p['offers']) for slot in result['slots'] for p in slot['products'])
         result['activity']={'status':'completed','tools':activity,'model':os.environ['GEMINI_MODEL'],'model_calls':model_calls,'usage':usage,'channel3_http_calls':http_budget.count,'search_count':total_searches,'refinement_count':refinements,'candidate_count':sum(len(s['products']) for s in result['slots']),'rejected_or_capped_offers':max(0,observed_offers-retained_offers),'bundle_count':len(result['options']),'validation_failures':validation_failures,'elapsed_ms':round((time.monotonic()-started)*1000)}

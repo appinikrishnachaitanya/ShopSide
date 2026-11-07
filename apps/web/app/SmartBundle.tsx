@@ -3,7 +3,7 @@ import { useState } from "react";
 import { sessionFetch } from "./lib/session";
 
 type Props = { room: any; me: any; online: boolean; selectProduct: (id: string) => void };
-const labels: Record<string,string> = {best_match:'Best match',budget_saver:'Budget saver',one_seller:'One seller',custom:'Your bundle'};
+const labels: Record<string,string> = {best_match:'Best match',budget_saver:'Budget saver',one_seller:'One seller',alternative:'Another option',custom:'Your bundle'};
 const money = (cents: number, currency: string) => `${currency} ${(cents / 100).toFixed(2)}`;
 
 export default function SmartBundle({room,me,online,selectProduct}:Props) {
@@ -47,7 +47,7 @@ export default function SmartBundle({room,me,online,selectProduct}:Props) {
     <div className="bundle-cards">{(bundle.options || []).map((option:any)=><article key={option.id} className={'bundle-card'+(selected?.id===option.id?' selected':'')}>
       <span className="bundle-kind">{labels[option.kind] || option.kind}{option.also_qualifies?.length ? ` · Also ${option.also_qualifies.map((kind:string)=>labels[kind] || kind).join(' · ')}` : ''}</span><div className="bundle-thumbnails">{option.items.map((item:any)=><div key={item.slot_id}>{item.product.image && <img src={item.product.image} alt=""/>}<strong>{item.product.name}</strong><small>{money(item.offer.price_cents,option.currency)} · {item.offer.retailer}</small></div>)}</div>
       <strong>{money(option.subtotal_cents,option.currency)}</strong><small>{money(option.remaining_cents,option.currency)} remaining before shipping and tax</small><small>{option.fit_score != null ? `AI match: ${option.fit_score}/100 · ` : ''}Evidence: {option.evidence_confidence || 'Not assessed'}</small>{option.ai_confidence_score != null && <small>Model self-assessment: {option.ai_confidence_score}/100 (not a calibrated probability)</small>}
-      <p>{option.kind==='budget_saver'?'Lowest observed complete combination.':option.kind==='one_seller'?'Every selected offer is from the same retailer.':'Matches available product names and stated preferences where supported.'}</p>
+      <p>{option.kind==='budget_saver'?'Lowest observed complete combination.':option.kind==='one_seller'?'Every selected offer is from the same retailer.':option.kind==='alternative'?'A different eligible product combination within your budget.':'Matches available product names and stated preferences where supported.'}</p>
       <button disabled={!online || working || !!progress} onClick={()=>action('select',{bundle_id:option.id})}>{selected?.id===option.id?'Choose again':'Choose bundle'}</button>
     </article>)}</div>
     {selected && <div className="bundle-selected"><div className="bundle-selected-head"><div><span className="section-kicker">SHARED SELECTION · VERSION {bundle.version}</span><h3>{labels[selected.kind] || 'Your bundle'}</h3></div><strong>{money(selected.subtotal_cents,selected.currency)}</strong></div>

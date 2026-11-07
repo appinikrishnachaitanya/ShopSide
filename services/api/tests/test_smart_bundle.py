@@ -149,3 +149,15 @@ def test_single_product_request_does_not_create_a_bundle(monkeypatch):
         state=main.load(room['id']);state['shopping_intent']={'product_requirements':['chair'],'bundle_requested':False,'currency':'USD','budget_cents':10000};main.save(room['id'],state)
     assert client.post(base+'/bundle/search').status_code==422
     assert 'smart_bundle' not in client.get(base).json()
+
+def test_same_best_and_cheapest_adds_distinct_product_option():
+    desks=[product('desk basic',8000),product('desk studio',11000)]
+    chairs=[product('chair basic',7000),product('chair studio',10000)]
+    slots=normalized_candidates(['desk','chair'],[desks,chairs],'USD')
+    bundles,_=build_bundles(slots,30000,'USD','workspace')
+    primary=bundles[0]
+    assert primary['kind']=='best_match' and 'budget_saver' in primary['also_qualifies']
+    alternative=next(b for b in bundles if b['kind']=='alternative')
+    assert alternative['id']!=primary['id']
+    assert any(a['product']['id']!=b['product']['id'] for a,b in zip(primary['items'],alternative['items']))
+    assert alternative['subtotal_cents']<=30000

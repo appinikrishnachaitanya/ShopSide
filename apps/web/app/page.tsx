@@ -12,6 +12,7 @@ import Concierge from "./Concierge";
 import ProductDetails from "./ProductDetails";
 import WorkspaceOverlay from "./WorkspaceOverlay";
 import SmartBundle from "./SmartBundle";
+import SellerOffers from "./SellerOffers";
 import AssistantMessage from "./AssistantMessage";
 import {
   ArrowRight,
@@ -600,7 +601,7 @@ export default function Home() {
           </div>
           <div className="welcome-footer">
             <span>✳ &nbsp; A BETTER WAY TO SHOP TOGETHER</span>
-            <span>GOOD COMPANY. GOOD FINDS.</span>
+            <a href="/merchant">Merchant workspace ↗</a>
           </div>
         </main>
       ) : (
@@ -612,7 +613,7 @@ export default function Home() {
                 <button className="workspace-cart" onClick={openCart}><ShoppingBag size={16}/> Basket <span>{(room.cart || []).reduce((sum:number,item:any)=>sum+item.quantity,0)+(room.external_cart?.length || 0)}</span></button>
               </div>
               <div className="workspace-summary" aria-label="Your shared workspace">
-                <div><strong>Our plan</strong><span>{room.move_in?.mission?.budget_cents != null ? `${room.move_in.mission.currency} ${(room.move_in.mission.budget_cents / 100).toFixed(2)} budget` : room.budget != null ? `USD ${(room.budget / 100).toFixed(2)} budget` : "Budget not set"} · {room.shortlist.length} saved</span></div>
+                <div><strong>Our plan</strong><span>{room.move_in?.mission?.budget_cents != null ? `${room.move_in.mission.currency} ${(room.move_in.mission.budget_cents / 100).toFixed(2)} budget` : room.budget != null ? `USD ${(room.budget / 100).toFixed(2)} budget` : "Budget not set"} · {room.shortlist.length} saved {room.shortlist.length===1?"product":"products"}{room.smart_bundle?.saved ? " · 1 saved bundle" : ""}</span></div>
                 <div className="workspace-summary-actions">
                   <button type="button" onClick={()=>setWorkspaceView("plan")}>View plan</button>
                   <button type="button" onClick={()=>setWorkspaceView("room")}>Open our room</button>
@@ -624,6 +625,7 @@ export default function Home() {
               {initialMissionLoading && <p role="status">Understanding your shopping goal…</p>}
               {room.shopping_intent?.shopping_goal && <div className="bundle-panel"><strong>Your shopping goal</strong><p>{room.shopping_intent.shopping_goal}</p>{room.shopping_intent.follow_up && <p>{room.shopping_intent.follow_up}</p>}</div>}
               <SmartBundle room={room} me={me} online={online} selectProduct={focusProduct} />
+              <SellerOffers room={room} me={me} />
               <div className="discovery">
                 <div className="section-heading">
                   <div>
