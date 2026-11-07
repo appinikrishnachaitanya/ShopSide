@@ -13,10 +13,13 @@ export default function ProductDetails({
   const [detail, setDetail] = useState<any>(null),
     [loading, setLoading] = useState(false),
     [error, setError] = useState(""),
-    [notice, setNotice] = useState("");
+    [notice, setNotice] = useState(""),
+    [lens,setLens]=useState<any>(null),
+    [history,setHistory]=useState<any>(null);
   useEffect(() => {
     let active = true;
     setDetail(null);
+    setLens(null);setHistory(null);
     setError("");
     sessionFetch(
       "/api/rooms/" +
@@ -74,6 +77,28 @@ export default function ProductDetails({
     }
   }
   const variants = detail?.variants;
+  async function commerceView(kind:"seller-lens"|"price-intelligence"){
+    setLoading(true);setError("");
+    try{
+      const response=await sessionFetch(`/api/rooms/${room.id}/products/${encodeURIComponent(product.provider_id)}/${kind}`);
+      const value=await response.json();if(!response.ok)throw Error(value.detail||"Could not load product evidence.");
+      if(kind==="seller-lens"){setLens(value);setDetail(value.product)}else setHistory(value);
+    }catch(e:any){setError(e.message)}finally{setLoading(false)}
+  }
+  async function openRetailer(retailer:string){
+    const tab=window.open("about:blank","_blank");
+    try{
+      const response=await sessionFetch(`/api/rooms/${room.id}/products/${encodeURIComponent(product.provider_id)}/retailer-link?retailer=${encodeURIComponent(retailer)}`);
+      const value=await response.json();if(!response.ok)throw Error(value.detail||"Retailer offer is unavailable.");
+      if(tab){tab.opener=null;tab.location.href=value.url}else window.location.href=value.url;
+    }catch(e:any){tab?.close();setError(e.message)}
+  }
+  function chooseVariant(option:any,label:string){
+    const selectedValues=Object.fromEntries((variants.selected||[]).map((x:any)=>[x.name,x.label]));
+    selectedValues[option.name]=label;
+    const choice=option.values.find((x:any)=>x.label===label);
+    action("resolve",selectedValues as Record<string,string>,choice?.product_id||undefined);
+  }
   return (
     <section className="provider-details" aria-label="Product details">
       <div className="provider-details-heading">
@@ -107,58 +132,20 @@ export default function ProductDetails({
               variants.selected?.find((x: any) => x.name === option.name)
                 ?.label || "";
             return (
-              <label key={option.name}>
-                {option.name}
-                <select
-                  aria-label={"Select " + option.name}
-                  value={selected}
-                  disabled={!online || loading}
-                  onChange={(e) => {
-                    const selectedValues = Object.fromEntries(
-                      (variants.selected || []).map((x: any) => [
-                        x.name,
-                        x.label,
-                      ]),
-                    );
-                    selectedValues[option.name] = e.target.value;
-                    const choice = option.values.find(
-                      (x: any) => x.label === e.target.value,
-                    );
-                    action(
-                      "resolve",
-                      selectedValues as Record<string, string>,
-                      choice?.product_id || undefined,
-                    );
-                  }}
-                >
-                  <option value="" disabled>
-                    Choose {option.name}
-                  </option>
-                  {option.values.map((value: any) => (
-                    <option
-                      key={value.label}
-                      value={value.label}
-                      disabled={
-                        value.exists === false ||
-                        value.available === "OutOfStock"
-                      }
-                    >
-                      {value.label}
-                      {value.available === "OutOfStock" ? " · unavailable" : ""}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <fieldset className="variant-studio" key={option.name}><legend>{option.name} {selected&&<small>· {selected}</small>}</legend><div className="variant-choices">{option.values.map((value:any)=><button type="button" key={value.label} aria-label={`${option.name} ${value.label}`} aria-pressed={selected===value.label} disabled={!online||loading||value.exists===false||value.available==="OutOfStock"} onClick={()=>chooseVariant(option,value.label)}>{value.thumbnail_url&&<img src={value.thumbnail_url} alt=""/>}<span>{value.label}</span>{value.available==="OutOfStock"&&<small>Unavailable</small>}</button>)}</div></fieldset>
             );
           })}
+          <div className="commerce-tools"><button disabled={loading} onClick={()=>commerceView("seller-lens")}>Seller Lens · compare offers</button><button disabled={loading} onClick={()=>commerceView("price-intelligence")}>Price Intelligence</button></div>
+          {lens&&<section className="seller-lens" aria-label="Seller Lens"><h3>Same product. Different retailers.</h3><p>Observed {new Date(lens.observed_at*1000).toLocaleString()} · Listed prices exclude unknown delivery, taxes and fees.</p>{lens.offers?.map((offer:any)=><div key={offer.retailer+offer.url}><strong>{offer.retailer}</strong><span>{offer.price_cents==null?"Price unavailable":`${offer.currency} ${(offer.price_cents/100).toFixed(2)}`} · {offer.availability||"Availability unknown"}</span><button onClick={()=>openRetailer(offer.retailer)}>Check current retailer link ↗</button></div>)}{!lens.offers?.length&&<p>No current retailer offers available.</p>}</section>}
+          {history&&<section className="price-intelligence" aria-label="Price Intelligence"><h3>Observed price history</h3>{history.available?<><p>{history.statistics?.classification==="low"?"Currently near the observed low.":history.statistics?.classification==="high"?"Currently near the observed high.":"Currently in the typical observed range."} Data through {new Date(history.as_of).toLocaleDateString()}.</p><div><span>Low {history.statistics.currency} {(history.statistics.minimum_cents/100).toFixed(2)}</span><span>Mean {history.statistics.currency} {(history.statistics.mean_cents/100).toFixed(2)}</span><span>High {history.statistics.currency} {(history.statistics.maximum_cents/100).toFixed(2)}</span></div><div className="price-history-bars" aria-label="Observed historical prices">{history.observations?.slice(-30).map((point:any,i:number)=><i key={i} title={`${point.currency} ${(point.price_cents/100).toFixed(2)} · ${point.at}`} style={{height:`${Math.max(8,Math.min(100,(point.price_cents/history.statistics.maximum_cents)*100))}%`}}/>)}</div><small>Historical observations do not predict future prices.</small></>:<p>{history.reason}</p>}</section>}
           <h3>Retailer offers</h3>
           {detail.offers?.length ? (
             detail.offers.map((offer: any, i: number) => (
               <p key={i}>
-                <a href={offer.url} target="_blank" rel="noopener noreferrer">
+                <button onClick={()=>openRetailer(offer.retailer)}>
                   {offer.retailer} · {offer.currency}{" "}
                   {offer.price_cents == null ? 'Price unavailable' : (offer.price_cents / 100).toFixed(2)} ↗
-                </a>{" "}
+                </button>{" "}
                 · {offer.availability || "Availability unknown"}
                 {offer.condition ? " · " + offer.condition : ""}
               </p>

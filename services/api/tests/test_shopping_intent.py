@@ -4,7 +4,24 @@ from fastapi.testclient import TestClient
 from app.main import app
 
 
-def test_ai_interpretation_is_shared_and_creates_move_in_context(monkeypatch):
+def test_apparel_sizes_are_constraints_not_bundle_categories():
+    from app.shopping_intent import ShoppingIntent
+    intent=ShoppingIntent.model_validate({'product_requirements':['shirt','chinos','size M','size 32'],
+        'bundle_requested':True,'constraints':[]})
+    assert intent.product_requirements==['shirt','chinos']
+    assert intent.constraints==['size M','size 32']
+    assert intent.bundle_requested is True
+
+
+def test_size_words_inside_product_names_are_preserved():
+    from app.shopping_intent import ShoppingIntent
+    intent=ShoppingIntent.model_validate({'product_requirements':['shirt size M','chinos size 32','size 9'],
+        'constraints':['black color']})
+    assert intent.product_requirements==['shirt size M','chinos size 32']
+    assert intent.constraints==['black color','size 9']
+
+
+def test_ai_interpretation_is_shared_without_automatic_studio(monkeypatch):
     import app.main as main
     output={'shopping_goal':'Furnish bedroom','product_requirements':['bed','lamp'],'budget_cents':100000,'currency':'USD','style':'minimalist','constraints':['small room'],'shopping_context':'move_in','participant_count':2,'bundle_requested':True,'follow_up':'What bed size?'}
     from app.shopping_intent import ShoppingIntent
@@ -17,9 +34,10 @@ def test_ai_interpretation_is_shared_and_creates_move_in_context(monkeypatch):
     assert b.post(base+'/intent').status_code==403
     assert a.post(base+'/intent').status_code==200
     shared=b.get(base).json()
-    assert shared['mode']=='move_in' and shared['shopping_intent']['bundle_requested'] is True
-    assert shared['move_in']['mission']['budget_cents']==100000
-    assert shared['move_in']['question']=='What bed size?'
+    assert shared['mode']=='general' and shared['shopping_intent']['bundle_requested'] is True
+    assert shared['shopping_intent']['shopping_mode']=='SPATIAL_ELIGIBLE'
+    assert shared['shopping_intent']['studio_requested'] is False
+    assert shared['shopping_intent']['budget_cents']==100000
 
 
 def test_bundle_uses_real_observed_prices_and_total_budget(monkeypatch,mock_bundle_runner):

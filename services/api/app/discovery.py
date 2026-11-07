@@ -2,7 +2,7 @@
 import os,time,threading,re,contextvars
 from decimal import Decimal
 from typing import Any
-from urllib.parse import quote,urlparse
+from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel,Field,ConfigDict
 from fastapi import HTTPException
@@ -42,6 +42,9 @@ class Product(BaseModel):
     variants:dict|None=None
     structured_attributes:dict|None=None
     key_features:list[str]|None=None
+    brands:list[dict]|None=None
+    category:dict|None=None
+    ratings:dict|None=None
 def safe_url(value):
     return value if urlparse(value).scheme=='https' else None
 def exact_cents(value):
@@ -49,7 +52,9 @@ def exact_cents(value):
     return int(cents) if cents==cents.to_integral_value() else None
 def normalize(raw):
     p=Product.model_validate(raw)
-    return dict(id='channel3:'+p.id,provider_id=p.id,name=p.title,description=p.description,provenance='channel3',retrieved_at=time.time(),image=next((safe_url(i.url) for i in p.images if safe_url(i.url)),None),offers=[dict(retailer=o.domain,url=safe_url(o.url),price_cents=exact_cents(o.price.price),currency=o.price.currency,availability=o.availability,variant=None,condition=o.condition,dimensions=o.dimensions,delivery=o.delivery or o.shipping,checkout='retailer') for o in p.offers if safe_url(o.url)],attributes=p.structured_attributes or {},variants=p.variants,key_features=p.key_features or [],merchant_offer=None)
+    from .experience_router import spatial_eligible
+    category=(p.category or {}).get('title') if isinstance(p.category,dict) else None
+    return dict(id='channel3:'+p.id,provider_id=p.id,name=p.title,description=p.description,provenance='channel3',source='CHANNEL3_LIVE',category=category,spatial_eligible=spatial_eligible({'category':category,'name':p.title}),brand=(p.brands or [{}])[0].get('name'),retrieved_at=time.time(),image=next((safe_url(i.url) for i in p.images or [] if safe_url(i.url)),None),offers=[dict(retailer=o.domain,url=safe_url(o.url),price_cents=exact_cents(o.price.price),currency=o.price.currency,availability=o.availability,variant=None,condition=o.condition,dimensions=o.dimensions,delivery=o.delivery or o.shipping,checkout='retailer') for o in p.offers or [] if safe_url(o.url)],attributes=p.structured_attributes or {},variants=p.variants,key_features=p.key_features or [],ratings=p.ratings,merchant_offer=None)
 
 def relevant_results(query, products):
     """Exclude obvious sofa accessories when the shopper asks for seating."""
@@ -91,13 +96,49 @@ def search_products(query,max_price=None):
     try:return relevant_results(query,[normalize(p) for p in request('/v1/search',body)['products']])
     except (ValueError,KeyError) as exc:raise HTTPException(502,'Channel3 response did not match its documented schema') from exc
 def product_details(id,selected_options=None):
-    from urllib.parse import urlencode
-    path='/v1/products/'+quote(id,safe='')
-    if selected_options:path+='?'+urlencode({'option_'+k:v for k,v in selected_options.items()})
-    return normalize(request(path))
-def similar_products(id):
-    try:return [normalize(p) for p in request('/v1/similar',{'product_id':id,'limit':12})['products']]
+    from channel3_sdk import Channel3
+    key=os.getenv('CHANNEL3_API_KEY')
+    if not key:raise HTTPException(503,'Live discovery unavailable — configure Channel3')
+    try:
+        client=Channel3(api_key=key,timeout=15,max_retries=0)
+        raw=client.products.retrieve(id,selected_options=selected_options or None).model_dump(mode='json')
+        result=normalize(raw)
+    except HTTPException:raise
+    except Exception as exc:raise HTTPException(502,'Channel3 product details unavailable') from exc
+    if selected_options:
+        effective={str(x['name']).casefold():str(x['label']).casefold() for x in (result.get('variants') or {}).get('selected',[])}
+        if any(effective.get(str(name).casefold())!=str(label).casefold() for name,label in selected_options.items()):
+            raise HTTPException(409,'Requested variation is unavailable; choose another size or color')
+    return result
+def similar_products(id,max_price=None):
+    body={'product_id':id,'limit':12}
+    if max_price is not None:body['filters']={'price':{'max_price':max_price}}
+    try:return [normalize(p) for p in request('/v1/similar',body)['products']]
     except (ValueError,KeyError) as exc:raise HTTPException(502,'Channel3 response did not match its documented schema') from exc
+
+def price_history(id,days=90):
+    """SDK 4.8.0 history is optional; never infer trends from current offers."""
+    from channel3_sdk import Channel3
+    key=os.getenv('CHANNEL3_API_KEY')
+    if not key:raise HTTPException(503,'Live discovery unavailable — configure Channel3')
+    try:
+        data=Channel3(api_key=key,timeout=15,max_retries=0).price_tracking.retrieve_history(id,days=days)
+    except Exception:
+        return {'available':False,'reason':'Price history is unavailable for this product.'}
+    stats=data.statistics
+    if not stats or not data.history:
+        return {'available':False,'reason':'No observed price history is available for this product.'}
+    values=[{'at':point.timestamp.isoformat(),'price_cents':exact_cents(Decimal(str(point.price))),
+             'currency':point.currency} for point in data.history if exact_cents(Decimal(str(point.price))) is not None]
+    if not values:return {'available':False,'reason':'No usable price history is available.'}
+    return {'available':True,'observations':values[-90:],'statistics':{
+        'minimum_cents':round(Decimal(str(stats.min_price))*100),
+        'maximum_cents':round(Decimal(str(stats.max_price))*100),
+        'mean_cents':round(Decimal(str(stats.mean))*100),
+        'current_cents':round(Decimal(str(stats.current_price))*100),
+        'std_dev_cents':round(Decimal(str(stats.std_dev))*100),
+        'classification':stats.current_status,'currency':stats.currency},
+        'source':'Channel3 observed history','as_of':values[-1]['at']}
 
 def advanced_search(body:AdvancedSearch):
     if body.min_price is not None and body.max_price is not None and body.min_price>body.max_price:

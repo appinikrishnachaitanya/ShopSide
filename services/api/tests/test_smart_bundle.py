@@ -23,6 +23,13 @@ def test_budget_saver_and_best_match_are_distinct_and_single_seller_uses_other_o
     assert {i['offer']['retailer'] for i in kinds['one_seller']['items']}=={'same.example'}
 
 
+def test_office_chair_alternatives_exclude_dining_chairs():
+    from app.smart_bundle import category_matches
+    assert not category_matches('ergonomic office chair',product('wood dining chair',5000))
+    assert not category_matches('ergonomic office chair',{**product('chair',5000),'category':'Dining Room Furniture'})
+    assert category_matches('ergonomic office chair',product('ergonomic task chair',9000))
+
+
 def test_rejects_bad_offers_and_avoids_duplicate_products():
     wrong=product('desk',1000,offers=[{'url':'javascript:alert(1)','retailer':'bad','price_cents':1000,'currency':'USD'}])
     out=product('chair',1000,offers=[{'url':'https://shop.example/p','retailer':'shop.example','price_cents':1000,'currency':'USD','availability':'OutOfStock'}])

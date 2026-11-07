@@ -1,7 +1,7 @@
 "use client";
 import MoveIn from "./MoveIn";
 import MemoryReceipt from "./MemoryReceipt";
-import RoomPreview from "./RoomPreview";
+import dynamic from "next/dynamic";
 import WhyPick from "./WhyPick";
 import { useEffect, useRef, useState } from "react";
 import { sessionFetch, sessionSocket, startInviteSession } from "./lib/session";
@@ -14,6 +14,8 @@ import WorkspaceOverlay from "./WorkspaceOverlay";
 import SmartBundle from "./SmartBundle";
 import PlanOverview from "./PlanOverview";
 import SellerOffers from "./SellerOffers";
+const RoomPreview=dynamic(()=>import("./RoomPreview"),{ssr:false,loading:()=> <p role="status">Opening Move-in Studio…</p>});
+const spatialEligible=(product:any)=>product?.spatial_eligible===true||/\b(?:furniture|decor|lamp|desk|chair|table|sofa|couch|loveseat|bed|shelf|cabinet|dresser|rug|nightstand)s?\b/i.test(`${product?.category||""} ${product?.name||""}`);
 import AssistantMessage from "./AssistantMessage";
 import {
   ArrowRight,
@@ -79,6 +81,7 @@ export default function Home() {
   }, []);
   const [shoppingRequest, setShoppingRequest] = useState("");
   const [workspaceView, setWorkspaceView] = useState<"discover" | "product" | "plan" | "room" | "together">("discover");
+  const [studioActive,setStudioActive]=useState(false);
   const [pendingFocus, setPendingFocus] = useState<string | null>(null);
   const [catalogQuery, setCatalogQuery] = useState("");
   const [searching, setSearching] = useState(false);
@@ -617,14 +620,14 @@ export default function Home() {
                 <div><strong>Our plan</strong><span>{room.move_in?.mission?.budget_cents != null ? `${room.move_in.mission.currency} ${(room.move_in.mission.budget_cents / 100).toFixed(2)} budget` : room.budget != null ? `USD ${(room.budget / 100).toFixed(2)} budget` : "Budget not set"} · {room.shortlist.length} shortlisted {room.shortlist.length===1?"product":"products"}{room.smart_bundle?.saved ? " · 1 saved bundle" : ""}</span></div>
                 <div className="workspace-summary-actions">
                   <button type="button" onClick={()=>setWorkspaceView("plan")}>View plan</button>
-                  <button type="button" onClick={()=>setWorkspaceView("room")}>Open our room</button>
+                  <button type="button" onClick={()=>{setStudioActive(false);setWorkspaceView("room")}}>Open our room</button>
                   {p && <button type="button" onClick={()=>setWorkspaceView("product")}>View selected</button>}
                 </div>
               </div>
               <div className="workspace-panel" aria-label="Discover products">
               {initialMissionLoading && <p role="status">Understanding your shopping goal…</p>}
               {room.shopping_intent?.shopping_goal && <div className="bundle-panel"><strong>Your shopping goal</strong><p>{room.shopping_intent.shopping_goal}</p>{room.shopping_intent.follow_up && <p>{room.shopping_intent.follow_up}</p>}</div>}
-              <SmartBundle room={room} me={me} online={online} selectProduct={focusProduct} openPlan={()=>setWorkspaceView("plan")} />
+              <SmartBundle room={room} me={me} online={online} selectProduct={focusProduct} openPlan={()=>setWorkspaceView("plan")} saveProduct={id=>command("shortlist",id)} openStudio={async id=>{await focusProduct(id);setStudioActive(true);setWorkspaceView("room")}} />
               <SellerOffers room={room} me={me} onCheckout={async offer=>{try{const payment=await api(`rooms/${room.id}/seller-offers/${offer.id}/checkout`,{});V(payment);openCart();E("")}catch(e:any){E(e.message)}}} />
               <div className="discovery">
                 <div className="section-heading">
@@ -795,7 +798,7 @@ export default function Home() {
               </div>
               </details>
               </div>
-              <WorkspaceOverlay open={workspaceView!=="discover"} title={workspaceView === "product" ? "Product details" : workspaceView === "plan" ? "Our plan" : workspaceView === "room" ? "Our room" : "Compare together"} drawer={workspaceView === "plan"} onClose={()=>setWorkspaceView("discover")}>
+              <WorkspaceOverlay open={workspaceView!=="discover"} title={workspaceView === "product" ? "Product details" : workspaceView === "plan" ? "Our plan" : workspaceView === "room" ? studioActive ? "Move-in Studio" : "Our room" : "Compare together"} drawer={workspaceView === "plan"} onClose={()=>{setStudioActive(false);setWorkspaceView("discover")}}>
               {roomAlert && workspaceView !== "discover" && <div className="room-alert" role="status"><span>{roomAlert}</span><button type="button" aria-label="Dismiss room update" onClick={() => setRoomAlert("")}>×</button></div>}
               <div className="workspace-panel spotlight-panel" hidden={workspaceView!=="product"} aria-label="Product spotlight">
               {room.agreed_product && (
@@ -924,7 +927,7 @@ export default function Home() {
                   </p>
                 )}
               </article>
-              {p && <button className="view-in-room" onClick={()=>setWorkspaceView("room")}>Open in 3D room <ArrowUpRight size={15}/></button>}
+              {p && spatialEligible(p) && <button className="view-in-room" onClick={()=>{setStudioActive(true);setWorkspaceView("room")}}>Try in Move-in Studio <ArrowUpRight size={15}/></button>}
               {p && <WhyPick room={room} product={p} />}
               {workspaceView === "product" && p?.provenance === "channel3" && (
                 <ProductDetails key={p.id} product={p} room={room} online={online} />
@@ -998,11 +1001,11 @@ export default function Home() {
               )}
               </div>
               <div className="workspace-panel" hidden={workspaceView!=="plan"} aria-label="Shopping plan">
-                <PlanOverview room={room} me={me} online={online} products={all} api={api} onState={fresh=>S((current:any)=>!current || fresh.revision>=current.revision?fresh:current)} onDiscover={()=>setWorkspaceView("discover")} onRoom={()=>setWorkspaceView("room")} toggleShortlist={id=>command("shortlist",id)} onCompare={async()=>{try{if(room.comparison?.join(",")!==room.shortlist.join(","))await api("rooms/"+room.id+"/commands",{kind:"compare",value:room.shortlist.join(","),revision:room.revision,command_id:crypto.randomUUID()});setWorkspaceView("together");E("")}catch(e:any){E(e.message)}}} />
+                <PlanOverview room={room} me={me} online={online} products={all} api={api} onState={fresh=>S((current:any)=>!current || fresh.revision>=current.revision?fresh:current)} onDiscover={()=>setWorkspaceView("discover")} onRoom={()=>{setStudioActive(false);setWorkspaceView("room")}} toggleShortlist={id=>command("shortlist",id)} onCompare={async()=>{try{if(room.comparison?.join(",")!==room.shortlist.join(","))await api("rooms/"+room.id+"/commands",{kind:"compare",value:room.shortlist.join(","),revision:room.revision,command_id:crypto.randomUUID()});setWorkspaceView("together");E("")}catch(e:any){E(e.message)}}} />
                 {room.mode === "move_in" ? <details className="plan-more"><summary>Move-in planning details</summary><MoveIn room={room} online={online} me={me} api={api} initialLoading={initialMissionLoading} onResults={()=>setWorkspaceView("discover")} /><MemoryReceipt room={room} online={online} /></details> : <details className="plan-more"><summary>Refine shopping goal with AI</summary><Concierge room={room} online={online} /><button type="button" disabled={!online} onClick={async()=>{try{await api("rooms/"+room.id+"/home-plan",{});E("");}catch(e:any){E(e.message);}}}>Add move-in planning</button></details>}
               </div>
               <div className="workspace-panel" hidden={workspaceView!=="room"} aria-label="Room view">
-                {workspaceView==="room" && <RoomPreview room={room} focused={p} online={online} me={me} command={command} />}
+                {workspaceView==="room" && (studioActive ? <RoomPreview room={room} focused={spatialEligible(p)?p:null} online={online} me={me} command={command} /> : <section className="shared-room-entry"><span className="section-kicker">YOUR SHARED SHOPPING ROOM</span><h2>Decide together, wherever you are.</h2><p>Your chat, shortlist, bundle and approvals stay in sync across devices. Browsing together never requires 3D.</p>{spatialEligible(p)&&<button onClick={()=>setStudioActive(true)}>Try {p.name} in Move-in Studio →</button>}</section>)}
               </div>
               <div className="workspace-panel" hidden={workspaceView!=="together"} aria-label="Compare together">
               <div className="together-header" id="together">

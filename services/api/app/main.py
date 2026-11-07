@@ -177,20 +177,23 @@ async def interpret_shopping_intent(r:str,request:Request):
     except Exception as exc: raise HTTPException(502,'Could not interpret the shopping goal; you can still search manually.') from exc
     explicit=explicit_initial_usd_budget(text)
     if explicit is not None: intent.budget_cents=explicit; intent.currency='USD'
+    from .experience_router import route_intent
+    routing=route_intent(intent.model_dump(mode='json'),text)
     with lock:
         current=load(r)
         # Never overwrite a newer interpretation or an existing user-edited mission.
         if current.get('shopping_intent'): return {'ok':True,'intent':current['shopping_intent']}
-        current['shopping_intent']=intent.model_dump(mode='json')
+        current['shopping_intent']={**intent.model_dump(mode='json'),**routing}
+        current['style_lock']={'style':intent.style,'palette':intent.preferences.get('color','') if intent.preferences else ''}
         current['intent_activity']=intent_activity
         if intent.budget_cents is not None and intent.currency=='USD' and current.get('budget') is None:current['budget']=intent.budget_cents
-        if intent.shopping_context=='move_in' and not current.get('move_in'):
+        if routing['studio_requested'] and not current.get('move_in'):
             current['mode']='move_in'
             mission=Mission(budget_cents=intent.budget_cents,currency=intent.currency or 'USD',priorities=[intent.style] if intent.style else [],must_have=intent.product_requirements,constraints=intent.constraints)
             current['move_in']={'mission':mission.model_dump(mode='json'),'history':[{'actor':actor,'text':text}],'question_count':1 if intent.follow_up else 0,'question':intent.follow_up,'items':{},'timeline':[]}
             if intent.follow_up:current['move_in']['history'].append({'actor':'ShopSide','text':intent.follow_up})
         current['revision']+=1;save(r,current)
-    return {'ok':True,'intent':intent.model_dump(mode='json')}
+    return {'ok':True,'intent':{**intent.model_dump(mode='json'),**routing}}
 
 class BundleAction(BaseModel):
     action: str = Field(pattern='^(select|swap|approve|withdraw|save)$')
@@ -207,6 +210,25 @@ class BundleBudget(BaseModel):
     expected_version:int=Field(default=0,ge=0,strict=True)
     command_id:str=Field(min_length=1,max_length=100)
 
+class StyleLockUpdate(BaseModel):
+    style:str=Field(default='',max_length=100)
+    palette:str=Field(default='',max_length=100)
+    expected_version:int=Field(ge=0,strict=True)
+    command_id:str=Field(min_length=8,max_length=100)
+
+@app.post('/api/rooms/{r}/bundle/style-lock')
+def update_style_lock(r:str,body:StyleLockUpdate,request:Request):
+    with lock:
+        auth(r,request);state=load(r);bundle=state.get('smart_bundle') or {}
+        if body.command_id in state.get('commands',[]):return public_room_state(state)
+        if body.expected_version!=bundle.get('version',0):raise HTTPException(409,'Bundle changed; refresh and retry')
+        state['style_lock']={'style':body.style.strip(),'palette':body.palette.strip()}
+        if bundle.get('selected'):
+            bundle['version']+=1;bundle['approvals']={}
+            bundle['selected']['version']=bundle['version']
+            bundle['selected']['preferences']=[x for x in state['style_lock'].values() if x]
+        state.setdefault('commands',[]).append(body.command_id);state['revision']+=1;save(r,state)
+        return public_room_state(state)
 class BundleSearchRequest(BaseModel):
     command_id:str|None=Field(default=None,min_length=1,max_length=100)
 
@@ -338,6 +360,10 @@ async def search_bundle(r:str,request:Request,body:BundleSearchRequest=BundleSea
         state['revision']+=1;save(r,state)
     return {'count':len(options)}
 
+class AlternativeSearchRequest(BaseModel):
+    expected_version:int=Field(ge=0,strict=True)
+    command_id:str=Field(min_length=1,max_length=100)
+
 @app.get('/api/rooms/{r}/bundle/alternatives/{slot_id}')
 def bundle_alternatives(r:str,slot_id:str,request:Request):
     with lock:
@@ -348,9 +374,46 @@ def bundle_alternatives(r:str,slot_id:str,request:Request):
         if not slot or not current:raise HTTPException(404,'Bundle item not found')
         return {'slot_id':slot_id,'version':bundle['version'],'alternatives':[{'product':p,'offer':o,'new_total_cents':selected['subtotal_cents']-current['offer']['price_cents']+o['price_cents']} for p in slot['products'] for o in p['offers'] if not any(x['product']['id']==p['id'] and x['slot_id']!=slot_id for x in selected['items'])]}
 
-class AlternativeSearchRequest(BaseModel):
-    expected_version:int=Field(ge=0,strict=True)
-    command_id:str=Field(min_length=1,max_length=100)
+@app.post('/api/rooms/{r}/bundle/alternatives/{slot_id}/similar')
+async def similar_bundle_swaps(r:str,slot_id:str,body:AlternativeSearchRequest,request:Request):
+    from .smart_bundle import normalized_candidates,match_score
+    with lock:
+        auth(r,request);state=load(r);bundle=state.get('smart_bundle') or {};selected=bundle.get('selected')
+        if not selected or body.expected_version!=bundle.get('version'):raise HTTPException(409,'Bundle changed; review it and try again')
+        slot=next((x for x in bundle.get('slots',[]) if x['id']==slot_id),None)
+        current=next((x for x in selected['items'] if x['slot_id']==slot_id),None)
+        if not slot or not current:raise HTTPException(404,'Bundle item not found')
+        intent=state.get('shopping_intent') or {};currency=bundle['currency']
+        max_cents=bundle['budget_cents']-(selected['subtotal_cents']-current['offer']['price_cents'])
+        if max_cents<0:raise HTTPException(409,'No budget remains for a swap')
+    try:
+        raw=await asyncio.wait_for(asyncio.to_thread(similar_products,current['product']['id'].removeprefix('channel3:'),max_cents/100),timeout=20)
+    except Exception as exc:raise HTTPException(502,'Similar products are unavailable; try again later') from exc
+    valid=normalized_candidates([slot['requirement']],[raw],currency,intent.get('hard_constraints'))[0]['products']
+    preferences=[str(x) for x in (state.get('style_lock') or {}).values() if isinstance(x,str)]
+    candidates=[]
+    for product in valid:
+        if product['id']==current['product']['id']:continue
+        for offer in product['offers']:
+            if offer['price_cents']<=max_cents:
+                candidates.append((match_score(slot['requirement'],product,preferences),offer['price_cents'],product,offer))
+    candidates=sorted(candidates,key=lambda x:(-x[0],x[1],x[2]['id']))[:3]
+    with lock:
+        state=load(r);bundle=state.get('smart_bundle') or {}
+        if bundle.get('version')!=body.expected_version:raise HTTPException(409,'Bundle changed while finding swaps')
+        slot=next(x for x in bundle['slots'] if x['id']==slot_id)
+        existing={p['id']:p for p in slot['products']}
+        for _,_,product,_ in candidates:existing[product['id']]=product
+        slot['products']=list(existing.values())
+        discovery={p['id']:p for p in state.get('discovery',[])}
+        for item in raw:
+            if item['id'] in existing:discovery[item['id']]=item
+        state['discovery']=list(discovery.values());state['revision']+=1;save(r,state)
+    return {'count':len(candidates),'slot_id':slot_id,'version':body.expected_version,'alternatives':[{'product':p,'offer':o,
+        'new_total_cents':selected['subtotal_cents']-current['offer']['price_cents']+o['price_cents'],
+        'price_difference_cents':o['price_cents']-current['offer']['price_cents'],
+        'style_match_score':score,'reason':'Same requested category; listed offer and bundle budget verified.'}
+        for score,_,p,o in candidates]}
 
 @app.post('/api/rooms/{r}/bundle/alternatives/{slot_id}/search')
 async def find_bundle_alternatives(r:str,slot_id:str,body:AlternativeSearchRequest,request:Request):
@@ -410,7 +473,8 @@ def bundle_action(r:str,body:BundleAction,request:Request):
             if not replacement or not any(x['slot_id']==body.slot_id for x in selected['items']):raise HTTPException(422,'Choose an available alternative')
             if any(x['product']['id']==replacement['product']['id'] and x['slot_id']!=body.slot_id for x in selected['items']):raise HTTPException(422,'A product cannot fill two bundle slots')
             items=[replacement if x['slot_id']==body.slot_id else x for x in selected['items']]
-            updated=make_bundle(items,'custom',bundle['budget_cents'],bundle['currency'],bundle['goal'],selected.get('preferences',[]))
+            updated=make_bundle(items,'custom',bundle['budget_cents'],bundle['currency'],bundle['goal'],
+                                [x for x in (state.get('style_lock') or {}).values() if isinstance(x,str) and x] or selected.get('preferences',[]))
             if updated['remaining_cents']<0:raise HTTPException(422,f"Over budget by {bundle['currency']} {-updated['remaining_cents']/100:.2f}; choose a cheaper alternative")
             bundle['version']+=1;updated['version']=bundle['version'];bundle['selected']=updated;bundle['approvals']={}
         elif body.action in ('approve','withdraw'):
@@ -465,6 +529,8 @@ def command(r:str,body:Command,request:Request):
             old=next((p for p in placements if p['product_id']==placement.product_id),None)
             product=next((p for p in catalog+s.get('discovery',[]) if p['id']==placement.product_id),None)
             if not product and not old:raise HTTPException(422,'Select a product in this room')
+            from .experience_router import spatial_eligible
+            if product and not spatial_eligible(product):raise HTTPException(422,'Only spatial products can be placed in Move-in Studio')
             if not old and len(placements)>=20:raise HTTPException(422,'This room can hold up to 20 product markers')
             updated={'product_id':placement.product_id,'name':product['name'] if product else old['name'],'x':placement.x,'z':placement.z,'updated_by':actor}
             s['room_placements']=[p for p in placements if p['product_id']!=placement.product_id]+[updated]
@@ -1114,6 +1180,43 @@ def refined_search(r:str,body:AdvancedSearch,request:Request):
 def detail(r:str,product_id:str,request:Request):
     auth(r,request); return product_details(product_id)
 
+def room_channel3_product(r,product_id,request):
+    with lock:
+        auth(r,request);state=load(r)
+        product=next((p for p in state.get('discovery',[]) if p.get('provider_id')==product_id and p.get('source','CHANNEL3_LIVE')=='CHANNEL3_LIVE'),None)
+        if not product:
+            bundle=state.get('smart_bundle') or {}
+            for selection in (bundle.get('selected'),bundle.get('saved')):
+                product=next((item['product'] for item in (selection or {}).get('items',[]) if item['product']['id']=='channel3:'+product_id),None)
+                if product:break
+        if not product:raise HTTPException(404,'Product is not in this room')
+        return product
+
+@app.get('/api/rooms/{r}/products/{product_id}/seller-lens')
+def seller_lens(r:str,product_id:str,request:Request):
+    room_channel3_product(r,product_id,request)
+    product=product_details(product_id)
+    offers=sorted((o for o in product['offers'] if isinstance(o.get('price_cents'),int)),
+                  key=lambda o:(o['price_cents'],o['retailer']))
+    return {'product':product,'offers':offers,'lowest_price_cents':offers[0]['price_cents'] if offers else None,
+            'observed_at':product['retrieved_at'],'caveat':'Listed prices exclude unknown delivery, taxes and fees.'}
+
+@app.get('/api/rooms/{r}/products/{product_id}/retailer-link')
+def retailer_link(r:str,product_id:str,retailer:str,request:Request):
+    room_channel3_product(r,product_id,request)
+    product=product_details(product_id)
+    offer=next((o for o in product['offers'] if o['retailer'].casefold()==retailer.casefold() and o.get('url')),
+               None)
+    if not offer:raise HTTPException(404,'Current retailer offer unavailable')
+    return {'url':offer['url'],'price_cents':offer['price_cents'],'currency':offer['currency'],
+            'availability':offer['availability'],'observed_at':product['retrieved_at']}
+
+@app.get('/api/rooms/{r}/products/{product_id}/price-intelligence')
+def product_price_intelligence(r:str,product_id:str,request:Request):
+    room_channel3_product(r,product_id,request)
+    from .discovery import price_history
+    return price_history(product_id)
+
 @app.get('/api/rooms/{r}/checkout')
 def current_checkout(r:str,request:Request):
     with lock:
@@ -1213,7 +1316,7 @@ async def provider_product_action(r:str,action:str,body:ProviderProductAction,re
             target=body.provider_id
             if body.variant_product_id and body.variant_product_id!=target:
                 original=await asyncio.wait_for(asyncio.to_thread(product_details,target,{}),timeout=15)
-                allowed=any(option.get('name') in body.selected_options and any(value.get('label')==body.selected_options[option['name']] and value.get('product_id')==body.variant_product_id and value.get('exists') is True for value in option.get('values',[])) for option in (original.get('variants') or {}).get('options',[]))
+                allowed=any(option.get('name') in body.selected_options and any(value.get('label')==body.selected_options[option['name']] and value.get('product_id')==body.variant_product_id and value.get('exists') is True and value.get('available')!='OutOfStock' for value in option.get('values',[])) for option in (original.get('variants') or {}).get('options',[]))
                 if not allowed:raise HTTPException(422,'Variant is not available for this product')
                 target=body.variant_product_id
             result=await asyncio.wait_for(asyncio.to_thread(product_details,target,body.selected_options),timeout=25)
@@ -1235,6 +1338,22 @@ async def provider_product_action(r:str,action:str,body:ProviderProductAction,re
         if action=='resolve':
             products=[p for p in state['discovery'] if p['id']!=result['id']]
             products.append(result);state['discovery']=products;state['focus']=result['id'];state['spotlight_by']=auth(r,request)
+            bundle=state.get('smart_bundle') or {};selected=bundle.get('selected')
+            if selected and any(item['product']['id']==source for item in selected['items']):
+                from .smart_bundle import normalized_candidates,make_bundle
+                old=next(item for item in selected['items'] if item['product']['id']==source)
+                candidate_slot=normalized_candidates([old['requirement']],[[result]],bundle['currency'])[0]
+                if not candidate_slot['products']:raise HTTPException(422,'Exact variation has no verified available offer')
+                candidate=candidate_slot['products'][0]
+                offer=candidate['offers'][0]
+                replacement={'slot_id':old['slot_id'],'requirement':old['requirement'],'product':candidate,'offer':offer}
+                items=[replacement if item['slot_id']==old['slot_id'] else item for item in selected['items']]
+                updated=make_bundle(items,'custom',bundle['budget_cents'],bundle['currency'],bundle['goal'],
+                    [value for value in (state.get('style_lock') or {}).values() if isinstance(value,str) and value])
+                if updated['remaining_cents']<0:raise HTTPException(422,'Exact variation exceeds the shared bundle budget')
+                slot=next(x for x in bundle['slots'] if x['id']==old['slot_id'])
+                slot['products']=[candidate]+[x for x in slot['products'] if x['id']!=candidate['id']]
+                bundle['version']+=1;updated['version']=bundle['version'];bundle['selected']=updated;bundle['approvals']={}
         else:
             current={p['id']:p for p in state['discovery']}
             current.update({p['id']:p for p in result});state['discovery']=list(current.values())

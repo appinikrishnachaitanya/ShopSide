@@ -21,27 +21,50 @@ def category_matches(requirement, product):
     meaningful = [w for w in words if w not in stop]
     if not meaningful:
         return False
-    known={'sofa','couch','loveseat','chair','desk','table','bed','lamp','keyboard','mouse','mice','monitor'}
+    known={'sofa','couch','loveseat','chair','desk','table','bed','lamp','keyboard','mouse','mice','monitor',
+           'shirt','pant','trouser','jean','shoe','sneaker','watch','necklace','earring','bracelet','ring',
+           'laptop','headphone','speaker','controller','console','case','charger','shelf','rug','bag'}
     nouns=[w.rstrip('s') for w in meaningful if w.rstrip('s') in known]
     head = nouns[-1] if nouns else meaningful[-1].rstrip('s')
     synonyms = {'sofa': ['sofa','couch','loveseat'], 'couch': ['sofa','couch','loveseat'],
                 'chair': ['chair'], 'desk': ['desk'], 'table': ['table'],
-                'bed': ['bed'], 'lamp': ['lamp'], 'keyboard': ['keyboard'], 'mouse': ['mouse','mice']}
+                'bed': ['bed'], 'lamp': ['lamp'], 'keyboard': ['keyboard'], 'mouse': ['mouse','mice'],
+                'shoe':['shoe','sneaker','footwear'],'sneaker':['shoe','sneaker','footwear'],
+                'pant':['pant','trouser','jean'],'trouser':['pant','trouser','jean'],'jean':['pant','trouser','jean'],
+                'headphone':['headphone','headset'],'earring':['earring'],'necklace':['necklace']}
     allowed = synonyms.get(head, [head])
     name = str(product.get('name') or '').lower()
     category = str(product.get('category') or '').lower()
     if head in ('sofa','couch') and re.search(r'\b(?:end|side|coffee|console|sofa)\s+tables?\b|\bnightstands?\b',name):
         return False
+    if head=='chair' and re.search(r'\b(?:office|ergonomic|task|desk)\b',requirement,re.I):
+        if re.search(r'\b(?:dining|patio|outdoor|bar\s*stool|accent)\b',name+' '+category):
+            return False
     return any(re.search(r'\b'+re.escape(term)+r's?\b',name+' '+category) for term in allowed)
 
 
-def normalized_candidates(requirements, batches, currency):
+def hard_constraints_match(requirement,product,hard_constraints):
+    if not isinstance(hard_constraints,dict):return True
+    for key,value in hard_constraints.items():
+        if not isinstance(key,str) or not isinstance(value,str):return False
+        scope,_,attribute=key.casefold().rpartition('.')
+        if scope and scope not in requirement.casefold():continue
+        attribute=attribute or key.casefold()
+        if attribute in ('budget','max_price','category'):continue
+        selected={str(x.get('name','')).casefold():str(x.get('label','')).casefold() for x in (product.get('variants') or {}).get('selected',[])}
+        attributes={str(k).casefold():[str(v).casefold() for v in values] for k,values in (product.get('attributes') or {}).items() if isinstance(values,list)}
+        desired=value.casefold()
+        if not any(attribute in name and label==desired for name,label in selected.items()) and not any(attribute in name and desired in values for name,values in attributes.items()):
+            return False
+    return True
+
+def normalized_candidates(requirements, batches, currency,hard_constraints=None):
     slots=[]
     for index,(requirement,products) in enumerate(zip(requirements,batches)):
         options=[]
         for product in products:
             if len(options)>=MAX_PRODUCTS:break
-            if not str(product.get('id','')).startswith('channel3:') or not category_matches(requirement,product):continue
+            if not str(product.get('id','')).startswith('channel3:') or not category_matches(requirement,product) or not hard_constraints_match(requirement,product,hard_constraints):continue
             offers=[]
             for offer in product.get('offers') or []:
                 url=offer.get('url')
@@ -63,6 +86,8 @@ def normalized_candidates(requirements, batches, currency):
             offers=sorted({o['id']:o for o in offers}.values(),key=lambda o:o['price_cents'])[:MAX_OFFERS]
             if offers:
                 options.append({'id':product['id'],'name':product.get('name') or 'Product','image':product.get('image'),
+                                'brand':product.get('brand'),'category':product.get('category'),
+                                'spatial_eligible':product.get('spatial_eligible',False),'variants':product.get('variants'),
                                 'retrieved_at':product.get('retrieved_at'),'features':(product.get('key_features') or [])[:5],
                                 'description_summary':str(product.get('description') or '')[:180],
                                 'attributes':product.get('attributes') or {},'offers':offers})

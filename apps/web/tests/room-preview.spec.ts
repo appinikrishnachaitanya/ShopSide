@@ -9,6 +9,7 @@ test('room markers synchronize between two browsers',async({browser})=>{
  await second.goto(base+'?invite='+room.invite);await second.getByLabel('Your name').fill('Sam');await second.getByRole('button',{name:'Join your friend'}).click();
  await expect(first.getByText('Alex & Sam',{exact:true})).toBeVisible();
  await first.getByRole('button',{name:'Open our room',exact:true}).click();await second.getByRole('button',{name:'Open our room',exact:true}).click();
+ await first.getByRole('button',{name:/Try .* in Move-in Studio/}).click();await second.getByRole('button',{name:/Try .* in Move-in Studio/}).click();
  const preview=first.getByLabel('Shared 3D room');await expect(preview).toBeVisible();await preview.getByRole('button',{name:'Place focused product'}).click();await preview.getByRole('button',{name:'Place in center'}).click();
  const peer=second.getByLabel('Shared 3D room');await expect(peer.getByText('Home Office Desk Lamp',{exact:true})).toBeVisible();
  await preview.getByRole('button',{name:'React to Home Office Desk Lamp'}).click();
@@ -17,13 +18,13 @@ test('room markers synchronize between two browsers',async({browser})=>{
  await peer.getByRole('button',{name:'React to Home Office Desk Lamp'}).click();
  await peer.getByRole('button',{name:'Too pricey for Home Office Desk Lamp'}).click();
  await expect(preview.getByText('Sam: 💸 Too pricey')).toBeVisible();
- await first.getByRole('button',{name:'Close Our room'}).click();await first.getByRole('button',{name:'View selected',exact:true}).click();
+ await first.getByRole('button',{name:'Close Move-in Studio'}).click();await first.getByRole('button',{name:'View selected',exact:true}).click();
  await expect(first.getByLabel('Why this pick').getByText(/No room reaction yet/)).toHaveCount(0);
  await expect(first.getByLabel('Why this pick').getByText(/Dimensions not provided/)).toBeVisible();
  await expect(first.getByLabel('Why this pick').getByText(/Set a budget/)).toBeVisible();
  await expect(first.getByLabel('Why this pick').getByText(/explicitly approved/)).toHaveCount(0);
  await peer.getByRole('button',{name:'Move Home Office Desk Lamp right'}).click();
  await expect.poll(async()=>((await (await first.request.get(base+'/api/rooms/'+id)).json()).room_placements?.[0]?.x)).toBe(.3);
- await first.reload();await first.getByRole('button',{name:'Open our room',exact:true}).click();await expect(first.getByLabel('Shared 3D room').getByText('Home Office Desk Lamp',{exact:true})).toBeVisible();
+ await first.reload();await first.getByRole('button',{name:'Open our room',exact:true}).click();await first.getByRole('button',{name:/Try .* in Move-in Studio/}).click();await expect(first.getByLabel('Shared 3D room').getByText('Home Office Desk Lamp',{exact:true})).toBeVisible();
  await a.close();await b.close();
 });
