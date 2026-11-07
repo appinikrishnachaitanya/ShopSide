@@ -73,6 +73,10 @@ class Command(BaseModel):
     revision: int
     kind: str
     value: str = Field(max_length=1000)
+class IntentAnswer(BaseModel):
+    text: str = Field(min_length=1,max_length=400)
+    revision: int = Field(ge=0,strict=True)
+    command_id: str = Field(min_length=1,max_length=100)
 def load(r):
     row=db.execute('SELECT state FROM rooms WHERE id=?',(r,)).fetchone()
     if not row: raise HTTPException(404,'Room not found')
@@ -177,6 +181,8 @@ async def interpret_shopping_intent(r:str,request:Request):
     except Exception as exc: raise HTTPException(502,'Could not interpret the shopping goal; you can still search manually.') from exc
     explicit=explicit_initial_usd_budget(text)
     if explicit is not None: intent.budget_cents=explicit; intent.currency='USD'
+    from .shopping_intent import complete_outfit_intent
+    intent=complete_outfit_intent(intent,text)
     from .experience_router import route_intent
     routing=route_intent(intent.model_dump(mode='json'),text)
     with lock:
@@ -194,6 +200,51 @@ async def interpret_shopping_intent(r:str,request:Request):
             if intent.follow_up:current['move_in']['history'].append({'actor':'ShopSide','text':intent.follow_up})
         current['revision']+=1;save(r,current)
     return {'ok':True,'intent':{**intent.model_dump(mode='json'),**routing}}
+
+@app.post('/api/rooms/{r}/intent/answer')
+async def answer_shopping_intent(r:str,body:IntentAnswer,request:Request):
+    from .shopping_intent import ShoppingIntent, complete_outfit_intent
+    from .experience_router import route_intent
+    with lock:
+        actor=auth(r,request); current=load(r)
+        if body.command_id in current.get('commands',[]): return public_room_state(current)
+        if body.revision!=current['revision']: raise HTTPException(409,'Room changed. Please retry your answer.')
+        previous=current.get('shopping_intent') or {}
+        if not previous.get('follow_up'): raise HTTPException(409,'There is no open shopping question.')
+        history=current.get('shopping_journey',{}).get('history',[])
+        if not history: raise HTTPException(422,'No shopping goal provided')
+        original=history[0].get('text','')
+        question=previous['follow_up']
+    prompt=f'{original}\nShopSide asked: {question}\nShopper answered: {body.text}'
+    try:
+        interpreted=await asyncio.wait_for(interpret_with_adk(prompt,ShoppingIntent),timeout=45)
+        intent,activity=interpreted if isinstance(interpreted,tuple) else (interpreted,{})
+    except Exception as exc:
+        raise HTTPException(502,'Could not update the shopping plan. Your answer is still here; please try again.') from exc
+    explicit=explicit_initial_usd_budget(original)
+    if explicit is not None: intent.budget_cents=explicit; intent.currency='USD'
+    elif previous.get('budget_cents') is not None:
+        intent.budget_cents=previous['budget_cents']; intent.currency=previous.get('currency')
+    if not intent.style: intent.style=previous.get('style','')
+    if not intent.shopping_goal: intent.shopping_goal=previous.get('shopping_goal','')
+    intent=complete_outfit_intent(intent,original,body.text)
+    routing=route_intent(intent.model_dump(mode='json'),prompt)
+    with lock:
+        current=load(r)
+        if body.command_id in current.get('commands',[]): return public_room_state(current)
+        if current['revision']!=body.revision or current.get('shopping_intent')!=previous:
+            raise HTTPException(409,'Room changed. Please retry your answer.')
+        current['shopping_intent']={**intent.model_dump(mode='json'),**routing}
+        current.pop('bundle_options',None)
+        current.pop('smart_bundle',None)
+        current['style_lock']={'style':intent.style,'palette':intent.preferences.get('color','') if intent.preferences else ''}
+        current['intent_activity']=activity
+        current.setdefault('shopping_journey',{}).setdefault('history',[]).append({'actor':actor,'text':body.text})
+        if intent.budget_cents is not None and intent.currency=='USD':current['budget']=intent.budget_cents
+        current['revision']+=1
+        current['commands']=(current.get('commands',[])+[body.command_id])[-200:]
+        save(r,current)
+        return public_room_state(current)
 
 class BundleAction(BaseModel):
     action: str = Field(pattern='^(select|swap|approve|withdraw|save)$')

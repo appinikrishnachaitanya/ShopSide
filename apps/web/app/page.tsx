@@ -4,6 +4,7 @@ import MemoryReceipt from "./MemoryReceipt";
 import dynamic from "next/dynamic";
 import WhyPick from "./WhyPick";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { sessionFetch, sessionSocket, startInviteSession } from "./lib/session";
 import DecisionBoard from "./DecisionBoard";
 import CartQuantity from "./CartQuantity";
@@ -89,6 +90,25 @@ export default function Home() {
   const [paymentBusy, setPaymentBusy] = useState(false);
   const [paypalReady, setPaypalReady] = useState(false);
   const [initialMissionLoading, setInitialMissionLoading] = useState(false);
+  const [hiddenDealPromptKey, setHiddenDealPromptKey] = useState("");
+  const [highlightPlanDeals, setHighlightPlanDeals] = useState(false);
+  const [followUpAnswer, setFollowUpAnswer] = useState("");
+  const [followUpBusy, setFollowUpBusy] = useState(false);
+  const [followUpError, setFollowUpError] = useState("");
+  async function answerFollowUp(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!room || !followUpAnswer.trim() || followUpBusy) return;
+    setFollowUpBusy(true); setFollowUpError("");
+    try {
+      const updated = await api(`rooms/${room.id}/intent/answer`, {text: followUpAnswer.trim(), revision: room.revision, command_id: crypto.randomUUID()});
+      S(updated); setFollowUpAnswer("");
+    } catch (err: any) {
+      if (err.status === 409) {
+        try { S(await api(`rooms/${room.id}`)); } catch {}
+      }
+      setFollowUpError(err.message);
+    } finally { setFollowUpBusy(false); }
+  }
   const [minPrice, setMinPrice] = useState("");
   const [maxPrice, setMaxPrice] = useState("");
   const [inStock, setInStock] = useState(false);
@@ -96,6 +116,14 @@ export default function Home() {
   const [copied, CopyDone] = useState(false);
   const [cartOpen, setCartOpen] = useState(false),
     [notice, setNotice] = useState("");
+  useEffect(() => {
+    if (!cartOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setCartOpen(false); };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => { document.body.style.overflow = previousOverflow; document.removeEventListener("keydown", closeOnEscape); };
+  }, [cartOpen]);
   const [me, M] = useState<any>(null),
     [variant, Variant] = useState("standard"),
     [quantity, Quantity] = useState(1),
@@ -275,7 +303,7 @@ export default function Home() {
       if (!invite && shoppingRequest.trim()) {
         try {
           const interpreted = await api("rooms/" + r.id + "/intent", {});
-          if (interpreted.intent?.shopping_context === "general" && !interpreted.intent?.bundle_requested) {
+          if (interpreted.intent?.shopping_context === "general" && !interpreted.intent?.bundle_requested && !interpreted.intent?.follow_up) {
             const fresh = await api("rooms/" + r.id);
             await api("rooms/" + r.id + "/concierge", { text: shoppingRequest.trim(), action: "answer", revision: fresh.revision, command_id: crypto.randomUUID() });
           }
@@ -375,6 +403,30 @@ export default function Home() {
 
   const all = [...catalog, ...(room?.discovery || [])];
   const p = all.find((p) => p.id === (pendingFocus || room?.focus));
+  const sandboxSubtotal = (room?.cart || []).reduce((total: number, item: any) => total + (catalog.find(product => product.id === item.product)?.price || 0) * item.quantity, 0);
+  const cartItemCount = (room?.cart || []).reduce((total: number, item: any) => total + item.quantity, 0) + (room?.external_cart?.length || 0);
+  const liveDealOffers = (room?.flash_offers || []).filter((offer: any) => ["OFFER_PUBLISHED", "COUNTERED", "ACCEPTED"].includes(offer.status));
+  const dealPromptKey = room ? `${room.id}:${liveDealOffers.at(-1)?.id || "intro"}` : "";
+  useEffect(() => {
+    if (dealPromptKey) setHiddenDealPromptKey(sessionStorage.getItem(`shopside-deal-prompt:${dealPromptKey}`) ? dealPromptKey : "");
+  }, [dealPromptKey]);
+  useEffect(() => {
+    if (workspaceView !== "plan" || !highlightPlanDeals) return;
+    const frame = requestAnimationFrame(() => document.getElementById("plan-deals")?.scrollIntoView({behavior:"smooth",block:"start"}));
+    return () => cancelAnimationFrame(frame);
+  }, [workspaceView, highlightPlanDeals]);
+  function dismissDealPrompt() {
+    if (!dealPromptKey) return;
+    sessionStorage.setItem(`shopside-deal-prompt:${dealPromptKey}`, "1");
+    setHiddenDealPromptKey(dealPromptKey);
+  }
+  const showRoomOption = Boolean(room && (
+    room.mode === "move_in" || room.move_in ||
+    room.shopping_intent?.shopping_context === "move_in" ||
+    room.shopping_intent?.spatial_eligible ||
+    spatialEligible(p) ||
+    (room.shortlist || []).some((id: string) => spatialEligible(all.find(item => item.id === id)))
+  ));
   async function focusProduct(id: string) {
     setPendingFocus(id);
     setWorkspaceView("product");
@@ -592,15 +644,15 @@ export default function Home() {
                 <div><strong>Our plan</strong><span>{room.move_in?.mission?.budget_cents != null ? `${room.move_in.mission.currency} ${(room.move_in.mission.budget_cents / 100).toFixed(2)} budget` : room.budget != null ? `USD ${(room.budget / 100).toFixed(2)} budget` : "Budget not set"} · {room.shortlist.length} shortlisted {room.shortlist.length===1?"product":"products"}{room.smart_bundle?.saved ? " · 1 saved bundle" : ""}</span></div>
                 <div className="workspace-summary-actions">
                   <button type="button" onClick={()=>setWorkspaceView("plan")}>View plan</button>
-                  <button type="button" onClick={()=>{setStudioActive(false);setWorkspaceView("room")}}>Open our room</button>
+                  {showRoomOption && <button type="button" onClick={()=>{setStudioActive(false);setWorkspaceView("room")}}>Open our room</button>}
                   {p && <button type="button" onClick={()=>setWorkspaceView("product")}>View selected</button>}
                 </div>
               </div>
               <div className="workspace-panel" aria-label="Discover products">
               {initialMissionLoading && <p role="status">Understanding your shopping goal…</p>}
-              {room.shopping_intent?.shopping_goal && <div className="bundle-panel"><strong>Your shopping goal</strong><p>{room.shopping_intent.shopping_goal}</p>{room.shopping_intent.follow_up && <p>{room.shopping_intent.follow_up}</p>}</div>}
+              {room.shopping_intent?.shopping_goal && <div className="bundle-panel"><strong>Your shopping goal</strong><p>{room.shopping_intent.shopping_goal}</p>{room.shopping_intent.follow_up && <form className="intent-answer" onSubmit={answerFollowUp}><label htmlFor="intent-answer-input">{room.shopping_intent.follow_up}</label><div className="intent-answer-row"><input id="intent-answer-input" value={followUpAnswer} onChange={event=>setFollowUpAnswer(event.target.value)} placeholder="For example: a tailored suit, a dress, or a saree" maxLength={400} autoComplete="off" required/><button type="submit" disabled={!online || followUpBusy}>{followUpBusy ? "Planning…" : "Continue planning"} <ArrowRight size={16}/></button></div>{followUpError && <p role="alert" className="intent-answer-error">{followUpError}</p>}</form>}</div>}
               <SmartBundle room={room} me={me} online={online} selectProduct={focusProduct} openPlan={()=>setWorkspaceView("plan")} saveProduct={id=>command("shortlist",id)} openStudio={async id=>{await focusProduct(id);setStudioActive(true);setWorkspaceView("room")}} />
-              <SellerOffers room={room} me={me} onCheckout={async offer=>{try{const payment=await api(`rooms/${room.id}/seller-offers/${offer.id}/checkout`,{});V(payment);openCart();E("")}catch(e:any){E(e.message)}}} />
+              {dealPromptKey !== hiddenDealPromptKey && <aside className="deal-prompt" aria-label="Seller offers invitation"><span className="deal-prompt-icon"><Sparkles size={17}/></span><div><strong>{liveDealOffers.length ? `${liveDealOffers.length} seller ${liveDealOffers.length===1?"offer is":"offers are"} ready` : "Seller offers, when you want them"}</strong><p>{liveDealOffers.length ? "Review the sandbox offer together in Our plan." : "Opt in to hear from ShopSide sandbox merchants. You can choose this later in Our plan."}</p></div><button type="button" className="deal-prompt-action" onClick={()=>{dismissDealPrompt();setHighlightPlanDeals(true);setWorkspaceView("plan")}}>View in plan <ArrowRight size={14}/></button><button type="button" className="deal-prompt-close" aria-label="Dismiss seller offers invitation" onClick={dismissDealPrompt}>×</button></aside>}
               <div className="discovery">
                 <div className="section-heading">
                   <div>
@@ -770,7 +822,7 @@ export default function Home() {
               </div>
               </details>
               </div>
-              <WorkspaceOverlay open={workspaceView!=="discover"} title={workspaceView === "product" ? "Product details" : workspaceView === "plan" ? "Our plan" : workspaceView === "room" ? studioActive ? "Move-in Studio" : "Our room" : "Compare together"} drawer={workspaceView === "plan"} onClose={()=>{setStudioActive(false);setWorkspaceView("discover")}}>
+              <WorkspaceOverlay open={workspaceView!=="discover"} title={workspaceView === "product" ? "Product details" : workspaceView === "plan" ? "Our plan" : workspaceView === "room" ? studioActive ? "Move-in Studio" : "Our room" : "Compare together"} drawer={workspaceView === "plan"} onClose={()=>{setStudioActive(false);setHighlightPlanDeals(false);setWorkspaceView("discover")}}>
               {roomAlert && workspaceView !== "discover" && <div className="room-alert" role="status"><span>{roomAlert}</span><button type="button" aria-label="Dismiss room update" onClick={() => setRoomAlert("")}>×</button></div>}
               <div className="workspace-panel spotlight-panel" hidden={workspaceView!=="product"} aria-label="Product spotlight">
               {room.agreed_product && (
@@ -973,8 +1025,9 @@ export default function Home() {
               )}
               </div>
               <div className="workspace-panel" hidden={workspaceView!=="plan"} aria-label="Shopping plan">
-                <PlanOverview room={room} me={me} online={online} products={all} api={api} onState={fresh=>S((current:any)=>!current || fresh.revision>=current.revision?fresh:current)} onDiscover={()=>setWorkspaceView("discover")} onRoom={()=>{setStudioActive(false);setWorkspaceView("room")}} toggleShortlist={id=>command("shortlist",id)} onCompare={async()=>{try{if(room.comparison?.join(",")!==room.shortlist.join(","))await api("rooms/"+room.id+"/commands",{kind:"compare",value:room.shortlist.join(","),revision:room.revision,command_id:crypto.randomUUID()});setWorkspaceView("together");E("")}catch(e:any){E(e.message)}}} />
-                {room.mode === "move_in" ? <details className="plan-more"><summary>Move-in planning details</summary><MoveIn room={room} online={online} me={me} api={api} initialLoading={initialMissionLoading} onResults={()=>setWorkspaceView("discover")} /><MemoryReceipt room={room} online={online} /></details> : <details className="plan-more"><summary>Refine shopping goal with AI</summary><Concierge room={room} online={online} /><button type="button" disabled={!online} onClick={async()=>{try{await api("rooms/"+room.id+"/home-plan",{});E("");}catch(e:any){E(e.message);}}}>Add move-in planning</button></details>}
+                <PlanOverview room={room} me={me} online={online} products={all} showRoomOption={showRoomOption} api={api} onState={fresh=>S((current:any)=>!current || fresh.revision>=current.revision?fresh:current)} onDiscover={()=>setWorkspaceView("discover")} onRoom={()=>{setStudioActive(false);setWorkspaceView("room")}} toggleShortlist={id=>command("shortlist",id)} onCompare={async()=>{try{if(room.comparison?.join(",")!==room.shortlist.join(","))await api("rooms/"+room.id+"/commands",{kind:"compare",value:room.shortlist.join(","),revision:room.revision,command_id:crypto.randomUUID()});setWorkspaceView("together");E("")}catch(e:any){E(e.message)}}} />
+                <div id="plan-deals" tabIndex={-1} className={"plan-deals"+(highlightPlanDeals?" plan-deals-highlight":"")}><SellerOffers room={room} me={me} onCheckout={async offer=>{try{const payment=await api(`rooms/${room.id}/seller-offers/${offer.id}/checkout`,{});V(payment);openCart();E("")}catch(e:any){E(e.message)}}} /></div>
+                {room.mode === "move_in" ? <details className="plan-more"><summary>Move-in planning details</summary><MoveIn room={room} online={online} me={me} api={api} initialLoading={initialMissionLoading} onResults={()=>setWorkspaceView("discover")} /><MemoryReceipt room={room} online={online} /></details> : <details className="plan-more"><summary>Ask ShopSide about your plan</summary><Concierge room={room} online={online} /><button type="button" disabled={!online} onClick={async()=>{try{await api("rooms/"+room.id+"/home-plan",{});E("");}catch(e:any){E(e.message);}}}>Add move-in planning</button></details>}
               </div>
               <div className="workspace-panel" hidden={workspaceView!=="room"} aria-label="Room view">
                 {workspaceView==="room" && (studioActive ? <RoomPreview room={room} focused={spatialEligible(p)?p:null} online={online} me={me} command={command} /> : <section className="shared-room-entry"><span className="section-kicker">YOUR SHARED SHOPPING ROOM</span><h2>Decide together, wherever you are.</h2><p>Your chat, shortlist, bundle and approvals stay in sync across devices. Browsing together never requires 3D.</p>{spatialEligible(p)&&<button onClick={()=>setStudioActive(true)}>Try {p.name} in Move-in Studio →</button>}</section>)}
@@ -1112,9 +1165,13 @@ export default function Home() {
                   ShopSide can use shared messages to help when asked.
                 </span>
               </div>
-              {cartOpen && <button className="cart-backdrop" aria-label="Close cart and checkout" onClick={()=>setCartOpen(false)} />}
+              <button type="button" className="chat-cart-entry" onClick={openCart}><ShoppingBag size={15}/> Cart & checkout <span className="cart-count">{cartItemCount}</span></button>
+              {cartOpen && createPortal(<><button className="cart-backdrop" aria-label="Close cart and checkout" onClick={()=>setCartOpen(false)} />
               <details
                 className="side-details cart-details"
+                role="dialog"
+                aria-modal="true"
+                aria-label="Cart and checkout"
                 open={cartOpen}
                 onToggle={(e) => {
                   setCartOpen(e.currentTarget.open);
@@ -1132,24 +1189,18 @@ export default function Home() {
                   </span>
                 </summary>
                 <div>
-                  <div className="cart-intro"><span>YOUR SHARED CART</span><h2>Everything you chose, in one place.</h2><p>Shop together here. Each item keeps its verified checkout destination.</p></div>
-                  <div className="cart-route-summary"><span>{(room.cart || []).reduce((count:number,item:any)=>count+item.quantity,0)} ShopSide sandbox items</span><span>{room.external_cart?.length || 0} retailer items</span></div>
+                  <div className="cart-intro"><span>YOUR SHARED CART</span><h2>Ready when you are.</h2><p>{cartItemCount} {cartItemCount===1?"item":"items"} chosen together. Review each item and its checkout destination.</p></div>
+                  <div className="cart-progress" aria-label="Checkout progress"><span className="is-current">1 <b>Review</b></span><span className={quote?"is-current":""}>2 <b>Checkout</b></span><span className={room.checkout?.status==="paid"?"is-current":""}>3 <b>Receipt</b></span></div>
                   {room.cart?.length === 0 && !room.external_cart?.length && (
-                    <p>
-                      Nothing in your cart yet. Find something you both love.
-                    </p>
+                    <div className="cart-empty"><ShoppingBag size={26}/><strong>Your cart is waiting for a good find.</strong><p>Explore products, save what you like, and add your favorites here.</p><button type="button" onClick={()=>setCartOpen(false)}>Keep shopping <ArrowRight size={15}/></button></div>
                   )}
-                  {!!room.cart?.length && <><h3>Pay here · ShopSide sandbox</h3><p>Fictional products · no goods shipped. PayPal Sandbox checkout.</p></>}
+                  {!!room.cart?.length && <div className="cart-section-heading"><span>01 · PAYPAL SANDBOX</span><h3>ShopSide merchant items</h3><p>Fictional products for the demo. No goods ship.</p></div>}
                   {room.cart?.map((item: any) => (
                     <div
-                      className="cart-line"
+                      className="cart-line cart-product"
                       key={item.product + item.variant}
                     >
-                      <p>
-                        {catalog.find((p) => p.id === item.product)?.name} ·{" "}
-                        {item.variant}
-                      </p>
-                      <p>{(() => { const product = catalog.find((p) => p.id === item.product); return product ? `$${(product.price / 100).toFixed(2)} each · $${((product.price * item.quantity) / 100).toFixed(2)}` : "Price unavailable"; })()}</p>
+                      {(() => {const product=catalog.find(p=>p.id===item.product);return <div className="cart-product-main"><img src={product?.image || "/products/headphones-render.png"} alt=""/><div><strong>{product?.name||"Product"}</strong><small>{item.variant} · ShopSide sandbox</small><p>{product ? `$${(product.price / 100).toFixed(2)} each · $${((product.price * item.quantity) / 100).toFixed(2)}` : "Price unavailable"}</p></div></div>})()}
                       <CartQuantity
                         item={item}
                         disabled={!online || !!room.checkout}
@@ -1170,21 +1221,12 @@ export default function Home() {
                   ))}
                   {!!room.external_cart?.length && (
                     <section aria-label="Retailer items">
-                      <h3>Buy at retailers · live products</h3>
-                      <p>
-                        Checkout happens on the retailer’s site; excluded from
-                        PayPal sandbox checkout.
-                      </p>
+                      <div className="cart-section-heading"><span>02 · RETAILER CHECKOUT</span><h3>Live retailer items</h3><p>Buy directly on each retailer’s site. Current price, delivery and availability are confirmed there.</p></div>
                       {room.external_cart.map((item: any) => (
-                        <div className="cart-line" key={item.id}>
-                          <strong>{item.name}</strong>
+                        <div className="cart-line cart-product" key={item.id}>
+                          <div className="cart-product-main">{item.image && <img src={item.image} alt=""/>}<div><strong>{item.name}</strong><small>Live product · retailer checkout</small></div></div>
                           {item.offers.map((offer: any, i: number) => (
-                            <p key={i}>
-                              <button type="button" onClick={()=>openRetailerCheckout(item.id,offer.retailer)}>
-                                {offer.retailer} · {offer.currency}{" "}
-                                {offer.price_cents == null ? "Price unavailable" : (offer.price_cents / 100).toFixed(2)} · Checkout at retailer ↗
-                              </button>
-                            </p>
+                            <div className="cart-retailer-offer" key={i}><span>{offer.retailer}<small>{offer.price_cents == null ? "Price unavailable" : `${offer.currency} ${(offer.price_cents / 100).toFixed(2)} observed`}</small></span><button type="button" onClick={()=>openRetailerCheckout(item.id,offer.retailer)}>Buy at retailer ↗</button></div>
                           ))}
                           <button
                             disabled={!online || !!room.checkout}
@@ -1207,7 +1249,7 @@ export default function Home() {
                       {catalog.find((p) => p.id === proposal.product)?.name}
                     </button>
                   ))}
-                  {(!!room.cart?.length || !!room.checkout) && <button
+                  {(!!room.cart?.length || !!room.checkout) && !quote && <div className="cart-checkout-cta"><div><strong>${(sandboxSubtotal/100).toFixed(2)} USD</strong><small>Sandbox subtotal · no real charge</small></div><button
                     className="checkout-button"
                     disabled={
                       !online ||
@@ -1219,10 +1261,10 @@ export default function Home() {
                     {me?.is_payer
                       ? "Continue to PayPal Sandbox"
                       : room.payer + " handles checkout"}
-                  </button>}
+                  </button></div>}
                   {quote && (
                     <section className="quote">
-                      <h3>{quote.merchant_id?"Merchant offer checkout":"Sandbox quote"}</h3>
+                      <span className="cart-section-eyebrow">PAYMENT REVIEW · PAYPAL SANDBOX</span><h3>{quote.merchant_id?"Merchant offer checkout":"Review your order"}</h3>
                       <p>
                         {quote.merchant_name?quote.merchant_name+" · ":"ShopSide merchant · "}PayPal sandbox · No goods shipped
                       </p>
@@ -1233,23 +1275,24 @@ export default function Home() {
                           {((item.price * item.quantity) / 100).toFixed(2)}
                         </p>
                       ))}
-                      <p>Fees $0.00</p>
-                      <strong>
+                      <p>ShopSide fees $0.00 · No goods shipped</p>
+                      <strong className="quote-total">
                         Total ${(quote.total / 100).toFixed(2)} USD
                       </strong>
                       {quote.reference_total!=null&&<p>Original ${(quote.reference_total/100).toFixed(2)} · Savings ${((quote.reference_total-quote.total)/100).toFixed(2)}</p>}
                       {room.checkout?.status==="paid"&&quote.merchant_id&&<div className="order-receipt"><span>ORDER COMPLETED · PAYPAL SANDBOX</span><h4>Chosen together. Paid in sandbox.</h4><p>{quote.merchant_name} · {quote.items?.map((item:any)=>`${item.name} × ${item.quantity}`).join(" + ")}</p><strong>ShopSide order {room.checkout.order_id||quote.id}</strong><small>PayPal capture {room.checkout.paypal_capture_id||quote.capture} · ${((quote.total||0)/100).toFixed(2)} USD · No goods shipped</small><a href={`/orders/${encodeURIComponent(room.checkout.order_id||quote.id)}?room=${encodeURIComponent(room.id)}`}>View order summary →</a></div>}
                       {orderRef && <p className="order-reference">Sandbox order: <strong>{orderRef}</strong> · {room.checkout?.status === "paid" ? "payment verified" : "awaiting PayPal approval"}</p>}
-                      <button disabled={paymentBusy || paypalReady || room.checkout?.status === "paid"} onClick={() => pay("create")}>
+                      {room.checkout?.status!=="paid" && <p className="quote-approval-note">You’ll review and approve the payment in PayPal before anything is captured.</p>}
+                      {room.checkout?.status!=="paid" && <button className="quote-primary" disabled={paymentBusy || paypalReady} onClick={() => pay("create")}>
                         {paymentBusy ? "Preparing PayPal…" : paypalReady ? "Approve with PayPal below" : "Create PayPal sandbox order"}
-                      </button>
+                      </button>}
                       <div id="paypal-buttons" />
-                      <button disabled={paymentBusy} onClick={() => pay("status")}>
+                      {room.checkout?.status!=="paid" && <button disabled={paymentBusy} onClick={() => pay("status")}>
                         Check payment status
-                      </button>
-                      <button disabled={paymentBusy || (room.checkout?.status || quote.status) !== "quoted"} onClick={() => pay("cancel")}>
+                      </button>}
+                      {room.checkout?.status!=="paid" && <button disabled={paymentBusy || (room.checkout?.status || quote.status) !== "quoted"} onClick={() => pay("cancel")}>
                         Cancel unused quote
-                      </button>
+                      </button>}
                     </section>
                   )}
                   {room.checkout && (
@@ -1260,7 +1303,7 @@ export default function Home() {
                     </p>
                   )}
                 </div>
-              </details>
+              </details></>,document.body)}
               <div className="conversation-footer">
                 <span>
                   <span className="lime-dot" /> YOUR ROOM IS PRIVATE

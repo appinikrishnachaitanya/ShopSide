@@ -13,11 +13,23 @@ test('room remains usable without WebGL',async({browser})=>{
  await expect(room.getByText(/simplified room because 3D graphics are unavailable/)).toBeVisible();await context.close();
 });
 
-test('general shared room works without opening 3D', async ({page}) => {
+test('ordinary shopping keeps collaboration without a room-preview action', async ({page}) => {
  await page.addInitScript(()=>{const original=HTMLCanvasElement.prototype.getContext;HTMLCanvasElement.prototype.getContext=function(type:any,...args:any[]):any{if(type==='webgl'||type==='webgl2'||type==='experimental-webgl')return null;return (original as any).call(this,type,...args);};});
  await page.goto(process.env.SHOPSIDE_TEST_URL || 'http://localhost:3000');
  await page.getByLabel('Your name').fill('General shopper');await page.getByRole('button',{name:'Create your shopping room'}).click();
- await page.getByRole('button',{name:'Open our room',exact:true}).click();
- await expect(page.getByText('Decide together, wherever you are.')).toBeVisible();
+ await expect(page.getByRole('button',{name:'Open our room',exact:true})).toHaveCount(0);
+ await expect(page.getByText('The conversation.')).toBeVisible();
+ await page.getByRole('button',{name:'View plan'}).click();
+ await expect(page.getByLabel('Shopping plan').getByRole('button',{name:'Open our room',exact:true})).toHaveCount(0);
+ await expect(page.getByLabel('Shared 3D room')).toHaveCount(0);
+});
+
+test('a selected home product reveals the room action without loading 3D', async ({page}) => {
+ await page.goto(process.env.SHOPSIDE_TEST_URL || 'http://localhost:3000');
+ await page.getByLabel('Your name').fill('Home shopper');
+ await page.getByRole('button',{name:'Create your shopping room'}).click();
+ await expect(page.getByRole('button',{name:'Open our room',exact:true})).toHaveCount(0);
+ await page.getByRole('button',{name:/Home Office Desk Lamp/}).click();
+ await expect(page.getByRole('button',{name:'Open our room',exact:true})).toBeVisible();
  await expect(page.getByLabel('Shared 3D room')).toHaveCount(0);
 });

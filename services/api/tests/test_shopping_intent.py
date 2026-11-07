@@ -21,6 +21,44 @@ def test_size_words_inside_product_names_are_preserved():
     assert intent.constraints==['black color','size 9']
 
 
+def test_outfit_follow_up_creates_real_bundle_without_guessing_before_answer():
+    from app.shopping_intent import ShoppingIntent, complete_outfit_intent
+    goal='Plan a super stylish outfit for my sister wedding under $300'
+    vague=ShoppingIntent(shopping_goal='Wedding outfit',product_requirements=['outfit'],budget_cents=30000,currency='USD',follow_up='Dress or suit?')
+    assert complete_outfit_intent(vague,goal).product_requirements==['outfit']
+    clarified=complete_outfit_intent(vague,goal,'A tailored suit')
+    assert clarified.product_requirements==['suit','dress shoes']
+    assert clarified.bundle_requested is True
+    assert clarified.follow_up==''
+    assert clarified.budget_cents==30000
+
+
+def test_outfit_answer_updates_shared_room_and_preserves_budget(monkeypatch):
+    import app.main as main
+    from app.shopping_intent import ShoppingIntent
+    async def interpret(text,schema):
+        if 'Shopper answered:' in text:
+            return ShoppingIntent(shopping_goal='Wedding outfit',product_requirements=['outfit'],budget_cents=None,follow_up='')
+        return ShoppingIntent(shopping_goal='Wedding outfit',product_requirements=['outfit'],follow_up='Dress or suit?')
+    monkeypatch.setattr(main,'interpret_with_adk',interpret)
+    a,b=TestClient(app),TestClient(app)
+    created=a.post('/api/rooms',json={'name':'Alex','initial_request':'Plan a super stylish outfit for my sister wedding under $300'}).json()
+    base='/api/rooms/'+created['room']['id']
+    assert b.post('/api/join/'+created['invite'],json={'name':'Sam'}).status_code==200
+    assert a.post(base+'/intent').status_code==200
+    before=a.get(base).json()
+    payload={'text':'A tailored suit','revision':before['revision'],'command_id':'outfit-answer-1'}
+    assert b.post(base+'/intent/answer',json=payload).status_code==200
+    after=a.get(base).json()
+    assert after['shopping_intent']['product_requirements']==['suit','dress shoes']
+    assert after['shopping_intent']['bundle_requested'] is True
+    assert after['shopping_intent']['studio_requested'] is False
+    assert after['shopping_intent']['budget_cents']==30000
+    assert after['budget']==30000
+    assert a.post(base+'/intent/answer',json=payload).status_code==200
+    assert a.post(base+'/intent/answer',json={**payload,'command_id':'different'}).status_code==409
+
+
 def test_ai_interpretation_is_shared_without_automatic_studio(monkeypatch):
     import app.main as main
     output={'shopping_goal':'Furnish bedroom','product_requirements':['bed','lamp'],'budget_cents':100000,'currency':'USD','style':'minimalist','constraints':['small room'],'shopping_context':'move_in','participant_count':2,'bundle_requested':True,'follow_up':'What bed size?'}

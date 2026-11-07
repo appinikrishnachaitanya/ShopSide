@@ -12,6 +12,10 @@ test('sandbox cart shows the quote and PayPal approval boundary', async ({ page 
   await page.getByRole('button', { name: /Home Office Desk Lamp.*Look at this/ }).click();
   await expect(page.getByRole('dialog', { name: 'Product details' })).toBeVisible();
   await page.getByRole('button', { name: 'Add to cart', exact: true }).click();
+  await expect(page.getByRole('dialog',{name:'Product details'})).toBeHidden();
+  const cartHeader=page.locator('.cart-details[open] > summary');
+  await expect(cartHeader).toBeVisible();
+  expect((await cartHeader.boundingBox())?.y).toBeLessThan(80);
   await expect(page.getByText('$39.00 each · $39.00')).toBeVisible();
   await page.getByRole('button', { name: 'Continue to PayPal Sandbox' }).click();
   await expect(page.getByText('Total $39.00 USD')).toBeVisible();
@@ -19,4 +23,6 @@ test('sandbox cart shows the quote and PayPal approval boundary', async ({ page 
   await expect(page.getByText('TEST-SANDBOX-ORDER')).toBeVisible();
   await expect(page.getByText('Sandbox approval ready')).toBeVisible();
   await expect(page.getByText('PayPal sandbox payment verified.')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog',{name:'Cart and checkout'})).toHaveCount(0);
 });

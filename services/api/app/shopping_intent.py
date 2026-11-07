@@ -4,6 +4,11 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 SIZE_ONLY = re.compile(r'^(?:(?:us|uk|eu)\s+)?size\s*[:#-]?\s*([a-z]{1,3}|\d{1,3}(?:\.\d)?)$', re.I)
+OUTFIT_PIECES = {
+    'dress':'shoes','suit':'dress shoes','tuxedo':'dress shoes',
+    'saree':'sandals','lehenga':'sandals','jumpsuit':'shoes',
+    'kurta':'shoes','sherwani':'dress shoes',
+}
 
 class ShoppingIntent(BaseModel):
     model_config = ConfigDict(extra='forbid')
@@ -33,3 +38,20 @@ class ShoppingIntent(BaseModel):
                 products.append(requirement)
         self.product_requirements=products
         return self
+
+
+def complete_outfit_intent(intent:ShoppingIntent,original_request:str,answer:str='')->ShoppingIntent:
+    """Complete an explicitly requested outfit only after the main garment is known."""
+    if not re.search(r'\b(?:outfit|look|ensemble)\b',original_request,re.I):return intent
+    if not answer or re.search(r'\b(?:only|just one item)\b',answer,re.I):return intent
+    match=next(((piece,companion) for piece,companion in OUTFIT_PIECES.items()
+                if re.search(r'\b'+re.escape(piece)+r'\b',answer,re.I)),None)
+    if not match:return intent
+    piece,companion=match
+    requirements=[item for item in intent.product_requirements if not re.fullmatch(r'(?:wedding\s+)?(?:outfit|look|ensemble)',item.strip(),re.I)]
+    if not any(re.search(r'\b'+re.escape(piece)+r'\b',item,re.I) for item in requirements):requirements.insert(0,piece)
+    if len(requirements)==1:requirements.append(companion)
+    intent.product_requirements=requirements[:4]
+    intent.bundle_requested=len(intent.product_requirements)>1
+    if intent.bundle_requested:intent.follow_up=''
+    return intent
