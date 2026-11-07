@@ -2,7 +2,7 @@ import {test,expect} from '@playwright/test';
 test('room markers synchronize between two browsers',async({browser})=>{
  const base=process.env.SHOPSIDE_TEST_URL || 'http://localhost:3000';
  const a=await browser.newContext();const b=await browser.newContext({viewport:{width:390,height:844}});const first=await a.newPage();const second=await b.newPage();
- await first.goto(base);await first.getByLabel('Your name').fill('Alex');await first.getByRole('button',{name:'Create your room'}).click();
+ await first.goto(base);await first.getByRole("button", { name: "Move-In Studio", exact: true }).click();await first.getByLabel('Your name').fill('Alex');await first.getByRole('button',{name:'Create your shopping room'}).click();
  await expect(first).toHaveURL(/room=/);
  const id=new URL(first.url()).searchParams.get('room');const room=await (await first.request.get(base+'/api/rooms/'+id)).json();
  await second.goto(base+'?invite='+room.invite);await second.getByLabel('Your name').fill('Sam');await second.getByRole('button',{name:'Join your friend'}).click();

@@ -1,6 +1,7 @@
 """Channel3 v1, verified against @channel3/skills 1.0.0 API reference."""
-import os,time,threading
+import os,time,threading,re
 from decimal import Decimal
+from typing import Any
 from urllib.parse import quote,urlparse
 import httpx
 from pydantic import BaseModel,Field,ConfigDict
@@ -28,6 +29,8 @@ class Offer(BaseModel):
     availability:str|None=None
     dimensions:dict|None=None
     condition:str|None=None
+    delivery: Any=None
+    shipping: Any=None
 class Image(BaseModel):
     url:str
 class Product(BaseModel):
@@ -43,7 +46,14 @@ def safe_url(value):
     return value if urlparse(value).scheme=='https' else None
 def normalize(raw):
     p=Product.model_validate(raw)
-    return dict(id='channel3:'+p.id,provider_id=p.id,name=p.title,description=p.description,provenance='channel3',retrieved_at=time.time(),image=next((safe_url(i.url) for i in p.images if safe_url(i.url)),None),offers=[dict(retailer=o.domain,url=safe_url(o.url),price_cents=int(o.price.price*100),currency=o.price.currency,availability=o.availability,variant=None,condition=o.condition,dimensions=o.dimensions,checkout='retailer') for o in p.offers if safe_url(o.url)],attributes=p.structured_attributes or {},variants=p.variants,key_features=p.key_features or [],merchant_offer=None)
+    return dict(id='channel3:'+p.id,provider_id=p.id,name=p.title,description=p.description,provenance='channel3',retrieved_at=time.time(),image=next((safe_url(i.url) for i in p.images if safe_url(i.url)),None),offers=[dict(retailer=o.domain,url=safe_url(o.url),price_cents=int(o.price.price*100),currency=o.price.currency,availability=o.availability,variant=None,condition=o.condition,dimensions=o.dimensions,delivery=o.delivery or o.shipping,checkout='retailer') for o in p.offers if safe_url(o.url)],attributes=p.structured_attributes or {},variants=p.variants,key_features=p.key_features or [],merchant_offer=None)
+
+def relevant_results(query, products):
+    """Exclude obvious sofa accessories when the shopper asks for seating."""
+    if not re.search(r'\b(?:sofas?|couches?|loveseats?)\b', query, re.I): return products
+    if re.search(r'\b(?:tables?|nightstands?|covers?|slipcovers?)\b', query, re.I): return products
+    accessory=re.compile(r'\b(?:nightstands?|end\s+tables?|side\s+tables?|coffee\s+tables?|console\s+tables?|sofa\s+tables?|slipcovers?|sofa\s+covers?)\b', re.I)
+    return [p for p in products if not accessory.search(p['name'])]
 cache={}; guard=threading.Lock()
 def request(path,payload=None):
     key=os.getenv('CHANNEL3_API_KEY')
@@ -64,7 +74,7 @@ def request(path,payload=None):
 def search_products(query,max_price=None):
     body={'query':query,'limit':12}
     if max_price is not None:body['filters']={'price':{'max_price':max_price}}
-    try:return [normalize(p) for p in request('/v1/search',body)['products']]
+    try:return relevant_results(query,[normalize(p) for p in request('/v1/search',body)['products']])
     except (ValueError,KeyError) as exc:raise HTTPException(502,'Channel3 response did not match its documented schema') from exc
 def product_details(id,selected_options=None):
     from urllib.parse import urlencode
@@ -93,5 +103,5 @@ def advanced_search(body:AdvancedSearch):
     if filters:payload['filters']=filters
     try:
         result=request('/v1/search',payload)
-        return {'products':[normalize(p) for p in result['products']],'next_page_token':result.get('next_page_token')}
+        return {'products':relevant_results(body.query,[normalize(p) for p in result['products']]),'next_page_token':result.get('next_page_token')}
     except (ValueError,KeyError) as exc:raise HTTPException(502,'Channel3 response did not match its documented schema') from exc

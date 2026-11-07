@@ -6,8 +6,8 @@ test('sandbox cart shows the quote and PayPal approval boundary', async ({ page 
   await page.route('**/api/paypal/config', route => route.fulfill({ json: { client_id: 'test-client', currency: 'USD' } }));
   await page.route('https://www.paypal.com/sdk/js?*', route => route.fulfill({ contentType: 'application/javascript', body: 'window.paypal={Buttons:()=>({render:(target)=>{document.querySelector(target).textContent="Sandbox approval ready";return Promise.resolve()}})};' }));
   await page.goto(base);
-  await page.getByLabel('Your name').fill('Payer');
-  await page.getByRole('button', { name: 'Create your room' }).click();
+  await page.getByRole("button", { name: "Move-In Studio", exact: true }).click();await page.getByLabel('Your name').fill('Payer');
+  await page.getByRole('button', { name: 'Create your shopping room' }).click();
   await page.getByRole('button', { name: /Home Office Desk Lamp.*Look at this/ }).click();
   await expect(page.getByRole('dialog', { name: 'Product details' })).toBeVisible();
   await page.getByRole('button', { name: 'Add to cart', exact: true }).click();

@@ -15,7 +15,7 @@ test("a real agent request from the second participant updates both boards", asy
     second = await b.newPage();
   await first.goto(url);
   await first.getByLabel("Your name").fill("Krishna");
-  await first.getByRole("button", { name: "Create your room" }).click();
+  await first.getByRole("button", { name: "Create your shopping room" }).click();
   await expect(first.getByText("Connected", { exact: true })).toBeVisible();
   const roomId = new URL(first.url()).searchParams.get("room");
   const room = await (

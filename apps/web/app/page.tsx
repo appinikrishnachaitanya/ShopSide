@@ -11,6 +11,7 @@ import Recommendations from "./Recommendations";
 import Concierge from "./Concierge";
 import ProductDetails from "./ProductDetails";
 import WorkspaceOverlay from "./WorkspaceOverlay";
+import AssistantMessage from "./AssistantMessage";
 import {
   ArrowRight,
   ArrowUpRight,
@@ -75,13 +76,14 @@ export default function Home() {
   }, []);
   const [shoppingRequest, setShoppingRequest] = useState("");
   const [workspaceView, setWorkspaceView] = useState<"discover" | "product" | "plan" | "room" | "together">("discover");
+  const [pendingFocus, setPendingFocus] = useState<string | null>(null);
   const [catalogQuery, setCatalogQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [orderRef, setOrderRef] = useState("");
   const [paymentBusy, setPaymentBusy] = useState(false);
   const [paypalReady, setPaypalReady] = useState(false);
   const [initialMissionLoading, setInitialMissionLoading] = useState(false);
-  const [mode, setMode] = useState("move_in");
+  const [mode, setMode] = useState("general");
   const [minPrice, setMinPrice] = useState("");
   const [maxPrice, setMaxPrice] = useState("");
   const [inStock, setInStock] = useState(false);
@@ -367,10 +369,12 @@ export default function Home() {
   }
 
   const all = [...catalog, ...(room?.discovery || [])];
-  const p = all.find((p) => p.id === room?.focus);
-  function focusProduct(id: string) {
+  const p = all.find((p) => p.id === (pendingFocus || room?.focus));
+  async function focusProduct(id: string) {
+    setPendingFocus(id);
     setWorkspaceView("product");
-    command("focus", id);
+    await command("focus", id);
+    setPendingFocus(current => current === id ? null : current);
   }
   function openCart() {
     setWorkspaceView("discover");
@@ -511,9 +515,9 @@ export default function Home() {
           <div className="welcome-grid">
             <div className="welcome-copy">
               <div className="welcome-tag">
-                <span /> GOOD TASTE. EVEN BETTER COMPANY.
+                <span /> MULTIPLAYER SHOPPING, POWERED BY AI
               </div>
-              {invite ? <><h1>You’re invited<span className="period">.</span><br /><em>Come on in.</em></h1><p>Pick a name and join the shared room. Everything your friend has already planned will be there.</p></> : <><h1>Make your next<br /><em>place feel like home.</em></h1><p>Find your favorites, bring your favorite person, and make the next chapter feel like yours.</p></>}
+              {invite ? <><h1>You’re invited<span className="period">.</span><br /><em>Come on in.</em></h1><p>Pick a name and join the shared room. Everything your friend has already planned will be there.</p></> : <><h1>Stop sending links<span className="period">.</span><br /><em>Start shopping together.</em></h1><p>Bring your people into one live room. Discover, compare, and decide with AI—together.</p></>}
               <form
                 className="welcome-form"
                 onSubmit={(e) => {
@@ -522,14 +526,14 @@ export default function Home() {
                 }}
               >
                 {!invite && <>
-                <div className="mode-toggle" aria-label="Shopping mode"><button type="button" aria-pressed={mode === "move_in"} onClick={() => setMode("move_in")}>Move-In Studio</button><button type="button" aria-pressed={mode === "general"} onClick={() => setMode("general")}>General shopping</button></div>
+                <div className="mode-toggle" aria-label="Shopping mode"><button type="button" aria-pressed={mode === "general"} onClick={() => setMode("general")}>Shop together</button><button type="button" aria-pressed={mode === "move_in"} onClick={() => setMode("move_in")}>Move-In Studio</button></div>
                 <label htmlFor="welcome-shopping">
                   WHAT ARE WE LOOKING FOR?
                 </label>
                 <input
                   id="welcome-shopping"
                   aria-label="What are you shopping for today?"
-                  placeholder={mode === "move_in" ? "We’re moving next Friday. We need a kitchen and office under $500…" : "I need luggage for my trip…"}
+                  placeholder={mode === "move_in" ? "We’re moving next Friday. We need a kitchen and office under $500…" : "A sofa, a gift, or anything you’re shopping for together…"}
                   value={shoppingRequest}
                   onChange={(e) => setShoppingRequest(e.target.value)}
                   maxLength={2000}
@@ -546,7 +550,7 @@ export default function Home() {
                     required
                   />
                   <button>
-                    {invite ? "Join your friend" : "Create your room"}{" "}
+                    {invite ? "Join your friend" : "Create your shopping room"}{" "}
                     <ArrowRight size={18} />
                   </button>
                 </div>
@@ -557,7 +561,7 @@ export default function Home() {
                   <b>P</b>
                 </span>
                 <span>
-                  Better decisions, together.
+                  Shop live. Compare with AI. Decide together.
                   <br />
                   <small>No account needed to get started.</small>
                 </span>
@@ -919,7 +923,7 @@ export default function Home() {
               {room.mode === "move_in" && p && <button className="view-in-room" onClick={()=>setWorkspaceView("room")}>Open in 3D room <ArrowUpRight size={15}/></button>}
               {p && <WhyPick room={room} product={p} />}
               {workspaceView === "product" && p?.provenance === "channel3" && (
-                <ProductDetails product={p} room={room} online={online} />
+                <ProductDetails key={p.id} product={p} room={room} online={online} />
               )}
               {p?.provenance === "channel3" ? (
                 <div className="cart-controls">
@@ -1078,7 +1082,7 @@ export default function Home() {
                       </span>
                       <div>
                         <strong>{m.actor}{m.actor === me?.name && m.actor !== "ShopSide" ? " · You" : ""}</strong>
-                        <p>{m.text}</p>
+                        <p>{m.actor === "ShopSide" ? <AssistantMessage text={m.text} products={all} /> : m.text}</p>
                       </div>
                     </article>
                   ))

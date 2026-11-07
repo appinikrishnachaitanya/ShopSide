@@ -15,7 +15,7 @@ test("desktop and mobile share persisted room", async ({ browser }) => {
   };
   await first.goto(testBase);
   await first.getByLabel("Your name").fill("Krishna");
-  await first.getByRole("button", { name: "Create your room" }).click();
+  await first.getByRole("button", { name: "Create your shopping room" }).click();
   await expect(first.getByText("Connected", { exact: true })).toBeVisible();
   const roomId = new URL(first.url()).searchParams.get("room");
   const state = await (

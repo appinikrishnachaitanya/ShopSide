@@ -972,6 +972,7 @@ a {
 }
 .messages article strong { color: #d8c4ff; }
 .messages article p { color: #f0ebf6; white-space: pre-wrap; }
+.messages article p strong { font-size: inherit; color: inherit; font-weight: 700; }
 .messages .message-own {
   flex-direction: row-reverse;
 }

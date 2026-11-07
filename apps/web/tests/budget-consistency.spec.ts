@@ -1,7 +1,7 @@
 import {test,expect} from '@playwright/test';
 test('saved items use the Move-In mission budget and comparable prices',async({page})=>{
  const base=process.env.SHOPSIDE_TEST_URL || 'http://localhost:3000';
- await page.goto(base);await page.getByLabel('Your name').fill('Budget tester');await page.getByRole('button',{name:'Create your room'}).click();await expect(page).toHaveURL(/room=/);
+ await page.goto(base);await page.getByRole("button", { name: "Move-In Studio", exact: true }).click();await page.getByLabel('Your name').fill('Budget tester');await page.getByRole('button',{name:'Create your shopping room'}).click();await expect(page).toHaveURL(/room=/);
  const id=new URL(page.url()).searchParams.get('room');const endpoint=base+'/api/rooms/'+id;
  let room=await (await page.request.get(endpoint)).json();const mission={...room.move_in.mission,budget_cents:80000,currency:'USD'};
  expect((await page.request.post(endpoint+'/move-in/mission',{data:{mission,revision:room.revision,command_id:'budget'}})).ok()).toBeTruthy();

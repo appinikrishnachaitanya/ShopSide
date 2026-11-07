@@ -3,7 +3,7 @@ test("two people share a move-in plan and explicitly approve a home item", async
   const base=process.env.SHOPSIDE_TEST_URL || "http://localhost:3000";
   const a=await browser.newContext(); const b=await browser.newContext({viewport:{width:390,height:844}});
   const first=await a.newPage(); const second=await b.newPage();
-  await first.goto(base);await first.getByLabel("Your name").fill("Avery");await first.getByRole("button",{name:"Create your room"}).click();
+  await first.goto(base);await first.getByRole("button", { name: "Move-In Studio", exact: true }).click();await first.getByLabel("Your name").fill("Avery");await first.getByRole("button",{name:"Create your shopping room"}).click();
   await first.getByRole("button",{name:"View plan",exact:true}).click();
   await expect(first.getByLabel("Move-In Studio")).toBeVisible();
   const id=new URL(first.url()).searchParams.get("room");const state=await (await first.request.get(base+"/api/rooms/"+id)).json();
