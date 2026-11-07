@@ -28,9 +28,9 @@ def setup(db):
     for index in range(1,4):
         merchant_id=f'sandbox-merchant-{index}'
         if not db.execute('SELECT id FROM merchants WHERE id=?',(merchant_id,)).fetchone():
-            merchant={'id':merchant_id,'name':f'Sandbox Merchant {index}','sandbox':True,'verified_domain':os.getenv(f'SHOPSIDE_MERCHANT_{index}_DOMAIN','').lower(),'agent_name':f'ShopSide Seller {index}',
+            merchant_data={'id':merchant_id,'name':f'Sandbox Merchant {index}','sandbox':True,'verified_domain':os.getenv(f'SHOPSIDE_MERCHANT_{index}_DOMAIN','').lower(),'agent_name':f'ShopSide Seller {index}',
                 'opt_in':False,'active':False,'mode':'manual','policy':{'max_discount_bps':0,'minimum_price_cents':None,'max_counteroffers':3,'offer_lifetime_seconds':600,'review_policy':'out_of_policy'},'activity':[]}
-            put(db,'merchants',merchant_id,merchant)
+            put(db,'merchants',merchant_id,merchant_data)
         domain=os.getenv(f'SHOPSIDE_MERCHANT_{index}_DOMAIN','').lower()
         if domain:
             current=merchant(db,merchant_id)
