@@ -1,6 +1,27 @@
 from fastapi.testclient import TestClient
 from app.main import app
 
+
+def test_concierge_removes_unverified_dimension_and_load_claims():
+    from app.concierge import grounded_spec_text
+    product={'name':'Compact desk','offers':[{'price_cents':47200,'currency':'USD','dimensions':None}],
+             'attributes':{},'description':'A compact desk.','key_features':['Adjustable height']}
+    result=grounded_spec_text('The desk is 48 inches wide and supports 200 lb. Listed price: $472.',[product])
+    assert '48 inches wide' not in result
+    assert 'supports 200 lb' not in result
+    assert 'Listed price: $472.' in result
+    assert 'Check the retailer listing' in result
+
+
+def test_concierge_keeps_dimension_claims_when_matching_channel3_evidence_exists():
+    from app.concierge import grounded_spec_text
+    product={'name':'Compact desk','offers':[{'dimensions':{'width':{'number':48,'unit':'in'},
+             'depth':{'number':24,'unit':'in'},'height':{'number':30,'unit':'in'}}}],
+             'attributes':{},'description':'','key_features':[]}
+    result=grounded_spec_text('The desk measures 48 × 24 × 30 in.',[product])
+    assert result=='The desk measures 48 × 24 × 30 in.'
+    assert '48 feet' not in grounded_spec_text('The Compact desk is 48 feet wide.',[product])
+
 def test_provider_conversation_continues_and_persists(monkeypatch):
     import app.concierge as concierge
     calls=[]
@@ -94,9 +115,9 @@ def test_refined_search_shares_pagination_and_filters(monkeypatch):
     a,b=TestClient(app),TestClient(app)
     created=a.post('/api/rooms',json={'name':'A'}).json();base='/api/rooms/'+created['room']['id']
     b.post('/api/join/'+created['invite'],json={'name':'B'})
-    payload={'query':'luggage','min_price':50,'max_price':200,'availability':['InStock'],'mode':'agentic','revision':1,'command_id':'s'}
+    payload={'query':'luggage','min_price':50,'max_price':200,'availability':['InStock'],'mode':'agentic','currency':'USD','revision':1,'command_id':'s'}
     assert a.post(base+'/search',json=payload).status_code==200
-    assert calls[0][1]['config']['mode']=='agentic'
+    assert calls[0][1]['config']=={'mode':'agentic','currency':'USD'}
     assert calls[0][1]['filters']=={'price':{'min_price':50,'max_price':200},'availability':['InStock']}
     assert b.get(base).json()['search_page_token']=='next'
     assert a.post(base+'/search',json={**payload,'command_id':'invalid','revision':2,'min_price':300}).status_code==422

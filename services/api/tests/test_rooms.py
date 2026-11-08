@@ -127,6 +127,9 @@ def test_adk_coordinates_real_room_tool_with_test_runner(monkeypatch):
     import app.main as main
     monkeypatch.setenv('GEMINI_API_KEY','test-key')
     monkeypatch.setenv('GEMINI_MODEL','test-model')
+    monkeypatch.setattr(main,'configured_client',lambda:object())
+    import google.adk.models.google_llm
+    monkeypatch.setattr(google.adk.models.google_llm,'Gemini',lambda **kwargs:'mock-gemini')
     seen={}
     class Sessions:
         async def create_session(self,**kwargs): return SimpleNamespace(id='test-session')

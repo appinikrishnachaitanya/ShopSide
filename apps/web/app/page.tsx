@@ -29,6 +29,7 @@ import {
   Heart,
   MessageCircle,
   Search,
+  SlidersHorizontal,
   ShoppingBag,
   Sparkles,
 } from "lucide-react";
@@ -716,19 +717,35 @@ export default function Home() {
                 </form>
                 {room.discovery?.length > 0 && resultCurrency && resultCurrency !== searchCurrency && <p className="market-currency-note" role="status">Showing previous {resultCurrency} results. Search again to load prices for {searchCurrency}.</p>}
                 {roomBudgetCents != null && roomBudgetCurrency !== searchCurrency && <p className="market-currency-note" role="note">Shared budget: {roomBudgetCurrency} {(roomBudgetCents / 100).toFixed(2)} · Selected market: {searchCurrency}. No conversion is assumed. Set a {searchCurrency} maximum in Filters to apply a market price cap.</p>}
-                <details className="filter-details"><summary>Filters <span>Price · category · color · brand · retailer</span></summary><div className="search-filters">
-                  <label>Min price ({searchCurrency}) <input aria-label={`Minimum price in ${searchCurrency}`} type="number" min="0" value={minPrice} onChange={e => setMinPrice(e.target.value)} /></label>
-                  <label>Max price ({searchCurrency}) <input aria-label={`Maximum price in ${searchCurrency}`} type="number" min="0" value={maxPrice} onChange={e => setMaxPrice(e.target.value)} placeholder={roomBudgetCents != null && roomBudgetCurrency === searchCurrency ? (roomBudgetCents / 100).toFixed(2) : "No cap"} /></label>
-                  <label><input type="checkbox" checked={inStock} onChange={e => setInStock(e.target.checked)} /> In stock</label>
-                  <label>Search mode <select value={searchMode} onChange={e => setSearchMode(e.target.value)}><option value="default">Standard</option><option value="agentic">Agentic</option><option value="keyword">Keyword</option></select></label>
-                  <label>Search market <select value={searchLocale} onChange={e=>setSearchLocale(e.target.value)}><option value="US:USD:en">United States · USD</option><option value="GB:GBP:en">United Kingdom · GBP</option><option value="CA:CAD:en">Canada · CAD</option><option value="AU:AUD:en">Australia · AUD</option></select></label>
-                  <label>Brand <input value={resultBrand} onChange={e=>setResultBrand(e.target.value)} placeholder="e.g. Nike" maxLength={100}/></label>
-                  <label>Retailer domain <input value={resultRetailer} onChange={e=>setResultRetailer(e.target.value)} placeholder="e.g. nike.com" maxLength={253}/></label>
-                  <label>Category <input value={resultCategory} onChange={e=>setResultCategory(e.target.value)} placeholder="Exact Channel3 category" maxLength={100}/></label>
-                  <label>Condition <select value={resultCondition} onChange={e=>setResultCondition(e.target.value)}><option value="">New or unknown</option><option value="new">New</option><option value="used">Used</option></select></label>
-                  <label>Image color <input type="color" value={resultColor||"#000000"} onChange={e=>setResultColor(e.target.value)} /><input type="checkbox" checked={!!resultColor} onChange={e=>setResultColor(e.target.checked?"#000000":"")} /> Use color</label>
-                </div>
-                <p role="note">{roomBudgetCents == null
+                <details className="filter-details">
+                  <summary>
+                    <span className="filter-summary-icon"><SlidersHorizontal size={16}/></span>
+                    <span className="filter-summary-copy"><strong>Filters</strong><small>Price, market, brand and more</small></span>
+                    <span className="filter-market-pill">{searchLocale.split(":")[0]} · {searchCurrency}</span>
+                    <ChevronDown className="filter-summary-chevron" size={17}/>
+                  </summary>
+                  <div className="filter-panel">
+                    <section className="filter-group" aria-label="Price and availability filters">
+                      <div className="filter-group-heading"><strong>Price & availability</strong><span>Amounts in {searchCurrency}</span></div>
+                      <div className="search-filters filter-market-grid">
+                        <label className="filter-control">Min price ({searchCurrency}) <input aria-label={`Minimum price in ${searchCurrency}`} type="number" min="0" value={minPrice} onChange={e => setMinPrice(e.target.value)} /></label>
+                        <label className="filter-control">Max price ({searchCurrency}) <input aria-label={`Maximum price in ${searchCurrency}`} type="number" min="0" value={maxPrice} onChange={e => setMaxPrice(e.target.value)} placeholder={roomBudgetCents != null && roomBudgetCurrency === searchCurrency ? (roomBudgetCents / 100).toFixed(2) : "No cap"} /></label>
+                        <label className="filter-control">Search market <select value={searchLocale} onChange={e=>setSearchLocale(e.target.value)}><option value="US:USD:en">United States · USD</option><option value="GB:GBP:en">United Kingdom · GBP</option><option value="CA:CAD:en">Canada · CAD</option><option value="AU:AUD:en">Australia · AUD</option></select></label>
+                        <label className="filter-control">Search mode <select value={searchMode} onChange={e => setSearchMode(e.target.value)}><option value="default">Standard</option><option value="agentic">Agentic</option><option value="keyword">Keyword</option></select></label>
+                        <label className="filter-check"><input type="checkbox" checked={inStock} onChange={e => setInStock(e.target.checked)} /> <span>In stock only</span></label>
+                      </div>
+                    </section>
+                    <section className="filter-group" aria-label="Product filters">
+                      <div className="filter-group-heading"><strong>Product details</strong><span>Optional refinements</span></div>
+                      <div className="search-filters filter-product-grid">
+                        <label className="filter-control">Brand <input value={resultBrand} onChange={e=>setResultBrand(e.target.value)} placeholder="e.g. Nike" maxLength={100}/></label>
+                        <label className="filter-control">Retailer domain <input value={resultRetailer} onChange={e=>setResultRetailer(e.target.value)} placeholder="e.g. nike.com" maxLength={253}/></label>
+                        <label className="filter-control">Category <input value={resultCategory} onChange={e=>setResultCategory(e.target.value)} placeholder="Channel3 category" maxLength={100}/></label>
+                        <label className="filter-control">Condition <select value={resultCondition} onChange={e=>setResultCondition(e.target.value)}><option value="">New or unknown</option><option value="new">New</option><option value="used">Used</option></select></label>
+                        <div className="filter-control filter-color-control"><span>Image color</span><div className="filter-color-row"><input aria-label="Image color" type="color" value={resultColor||"#000000"} onChange={e=>setResultColor(e.target.value)} /><label className="filter-check"><input type="checkbox" checked={!!resultColor} onChange={e=>setResultColor(e.target.checked?"#000000":"")} /> <span>Apply color</span></label></div></div>
+                      </div>
+                    </section>
+                    <p className="filter-note" role="note">{roomBudgetCents == null
                   ? `Price filters use ${searchCurrency}.`
                   : roomBudgetCurrency === searchCurrency
                     ? `Your shared budget is ${roomBudgetCurrency} ${(roomBudgetCents / 100).toFixed(2)} and is used as the maximum unless you enter another ${searchCurrency} cap.`
@@ -736,8 +753,9 @@ export default function Home() {
                   {maxPrice.trim() && roomBudgetCents != null && roomBudgetCurrency !== searchCurrency
                     ? ` Results are capped at ${searchCurrency} ${Number(maxPrice).toFixed(2)}; the shared room budget remains ${roomBudgetCurrency} ${(roomBudgetCents / 100).toFixed(2)}.`
                     : ""} Filters apply to your next Channel3 search. Enter the brand’s exact name and the retailer’s domain.</p>
+                  </div>
                 </details>
-                <details className="filter-details"><summary>Search from a picture or product link</summary><div className="search-filters"><label>Public HTTPS URL <input type="url" value={visualUrl} onChange={e=>setVisualUrl(e.target.value)} placeholder="https://example.com/image-or-product" /></label><button disabled={!online||searching||!visualUrl.trim()} onClick={()=>discoverVisual("image")}>Find from image</button><button disabled={!online||searching||!visualUrl.trim()} onClick={()=>discoverVisual("product")}>Look up product link</button></div></details>
+                <details className="filter-details visual-filter-details"><summary><span className="filter-summary-copy"><strong>Search from a picture or product link</strong><small>Find matching live products</small></span><ChevronDown className="filter-summary-chevron" size={17}/></summary><div className="search-filters visual-search-filters"><label className="filter-control">Public HTTPS URL <input type="url" value={visualUrl} onChange={e=>setVisualUrl(e.target.value)} placeholder="https://example.com/image-or-product" /></label><button disabled={!online||searching||!visualUrl.trim()} onClick={()=>discoverVisual("image")}>Find from image</button><button disabled={!online||searching||!visualUrl.trim()} onClick={()=>discoverVisual("product")}>Look up product link</button></div></details>
                 {room.search_page_token && room.search_query === query && <button onClick={() => discover(room.search_page_token)}>Next results</button>}
                 {room.mode === "move_in" && <button className="search-from-brief" disabled={!online || searching} onClick={findForMission}><Sparkles size={15}/> Find matches from your plan</button>}
                 {room.discovery?.length > 0 ? (

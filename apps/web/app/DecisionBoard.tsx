@@ -106,7 +106,7 @@ export default function DecisionBoard({
         </p>
       ))}
       <div style={{ height: 320, width: "100%" }}>
-        <AgGridReact
+        {selected.length ? <AgGridReact
           theme={themeQuartz.withParams({
             backgroundColor: "#171b16",
             foregroundColor: "#dbe5d6",
@@ -118,6 +118,7 @@ export default function DecisionBoard({
             fontSize: 12,
           })}
           rowData={rows}
+          suppressNoRowsOverlay={true}
           columnDefs={(
             [
               "name",
@@ -136,7 +137,9 @@ export default function DecisionBoard({
             wrapText: true,
             autoHeight: true,
           }))}
-        />
+        /> : <p className="board-grid-empty" role="status">
+          {room.comparison?.length ? products.length ? "The compared products are not available in this room yet. Refresh or add them again from discovery." : "Loading the selected products…" : "Compare saved products to see their details here."}
+        </p>}
       </div>
       {selected
         .filter((p) => p.provenance === "channel3")

@@ -26,6 +26,16 @@ An external Channel3 price alert can create a request to find a ShopSide-owned a
 - **PayPal Sandbox:** ordinary buyer-approved CAPTURE checkout remains available. For an explicitly mapped ShopSide merchant, the buyer can approve a capped AUTHORIZE hold before the seller responds. Settlement rechecks merchant, SKU, quantity, stock, buyer policy, currency, amount, expiry and PayPal readback. Lower capture is individually gated. Without verified lower-capture capability, ShopSide voids the hold and asks the buyer to approve a new checkout.
 - **Receipts and webhooks:** completed owned-merchant orders have a receipt and decision timeline. PayPal and Channel3 webhooks require signature verification; processing jobs read provider state before changing payment or alert state.
 
+## Prepared judge room
+
+To create a real shared room with Person A and Person B, two spatially eligible catalog items, marker reactions, and chat, run the one-time seeder from a checkout with the Python API dependencies installed:
+
+```sh
+FRONTEND_URL=https://<frontend-cloud-run-url> .venv/bin/python scripts/seed_showcase_room.py
+```
+
+The script uses the frontend proxy, so the room is stored in the configured backend database and live room updates use the regular API. It prints an invite link; a judge can open it, enter a name, and join as another participant. Each run creates a new room, so retain and reuse its invite link for the walkthrough.
+
 ## Architecture
 
 ```mermaid

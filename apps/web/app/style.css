@@ -1939,6 +1939,7 @@ body{background:radial-gradient(ellipse at 15% 0%,#201b42 0,transparent 36%),#0d
 .people-label{max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 .move-loading{margin:12px 0;padding:10px 12px;border-radius:10px;background:#35294c;color:#e6dcff;font-size:.8rem;line-height:1.45}
+.board-grid-empty{height:100%;display:grid;place-items:center;margin:0;border:1px dashed var(--line,#343c31);border-radius:14px;color:var(--muted,#9aa59b);text-align:center;padding:24px}
 
 .member-identity{display:inline-flex;align-items:center;margin-top:10px;padding:6px 10px;border:1px solid #51466b;border-radius:999px;color:#e8dcff;background:#29233c;font-size:11px;font-weight:700}
 /* A compact workspace keeps discovery, decisions and conversation within reach. */
@@ -2004,3 +2005,56 @@ body{background:radial-gradient(ellipse at 15% 0%,#201b42 0,transparent 36%),#0d
 .deal-progress{margin-top:16px;padding:15px;border:1px solid #52786e;border-radius:14px;background:#182e2d}.deal-progress>strong{font-size:13px;color:#e8fff4}.deal-progress p{margin:5px 0 12px;font-size:11px;color:#b7d0c6}.deal-progress ul{list-style:none;padding:0;margin:0}.deal-progress li{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid #ffffff1c;font-size:12px}.deal-progress li strong{color:#a8efcf;text-align:right;font-size:11px}
 .deal-duration{display:flex;align-items:center;gap:10px;margin-top:14px;color:#c5dfd6;font-size:12px}.deal-duration select{padding:8px 10px;border:1px solid #5a7d72;border-radius:9px;background:#1b3031;color:#f0fff6}.seller-offers .deal-authority-note{font-size:12px;color:#c6e4d7}
 .market-currency-note{margin:9px 0;padding:9px 12px;border:1px solid #625479;border-radius:10px;background:#211d2d;color:#d9cdef;font-size:11px;line-height:1.5}
+/* Consistent action rhythm across shopping, merchant, and order screens. */
+button{display:inline-flex;align-items:center;justify-content:center;gap:.5rem;min-height:44px;padding-block:10px;line-height:1.2;vertical-align:middle}
+button>svg{flex:none}
+.merchant-sidebar nav button{justify-content:flex-start}
+.mode-toggle button,.welcome-form .inspiration button{min-height:38px;padding-block:8px}
+.workspace-dialog-header button,.merchant-close{width:44px;height:44px;min-height:44px;padding:0}
+@media print{.order-summary-shell header a,.order-summary-card button{display:none}}
+/* Preserve layouts that use buttons as tabs, compact send controls, or row actions. */
+.message-compose button{width:44px;height:44px;min-width:44px;padding:0}
+.mobile-nav button{display:grid;justify-items:center;align-content:center;gap:3px;min-height:56px;padding:5px}
+.recommended-list button{justify-content:space-between;text-align:left}
+.marker-reaction-options button{justify-content:flex-start;text-align:left}
+.merchant-heading{align-items:center}
+.merchant-heading button{margin-top:0}
+/* Discovery filters use consistent fields and a responsive, grouped layout. */
+.filter-details{margin:10px 0 0;overflow:hidden;border:1px solid #494157;border-radius:15px;background:linear-gradient(145deg,#211e2c,#191923)}
+.filter-details summary{display:flex;align-items:center;gap:12px;min-height:62px;padding:10px 14px;list-style:none;color:#f2edf9;cursor:pointer}
+.filter-details summary::-webkit-details-marker{display:none}
+.filter-summary-icon{display:grid;place-items:center;flex:none;width:38px;height:38px;border:1px solid #5e5075;border-radius:12px;background:#312841;color:#d4c4ff}
+.filter-summary-copy{display:grid;gap:3px;min-width:0}
+.filter-summary-copy strong{font-size:12px;font-weight:800}
+.filter-summary-copy small{color:#aaa1b6;font-size:10px;font-weight:450}
+.filter-details summary .filter-market-pill{margin-left:auto;padding:7px 10px;border:1px solid #514760;border-radius:999px;background:#282332;color:#d6cafa;font-size:10px;font-weight:750;white-space:nowrap}
+.filter-summary-chevron{flex:none;color:#b9aecb;transition:transform .18s ease}
+.filter-details[open] summary .filter-summary-chevron{transform:rotate(180deg)}
+.filter-panel{padding:0 15px 14px;border-top:1px solid #ffffff12}
+.filter-group{padding:13px 0 2px;border:0}
+.filter-group+.filter-group{margin-top:8px;border-top:1px solid #ffffff12}
+.filter-group-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.filter-group-heading strong{font-size:11px;color:#eee8f7}
+.filter-group-heading span{font-size:10px;color:#a69cb3}
+.search-filters.filter-market-grid,.search-filters.filter-product-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));align-items:stretch;gap:10px;margin:10px 0 8px;color:#c7bed2}
+.search-filters .filter-control{display:grid;align-content:start;gap:7px;min-width:0;padding:10px 11px;border:1px solid #40394d;border-radius:12px;background:#1b1925;color:#cfc7d9;font-size:10px;font-weight:700}
+.search-filters .filter-control input:not([type=checkbox]):not([type=color]),.search-filters .filter-control select{width:100%;min-width:0;height:42px;padding:0 11px;border:1px solid #4a4357;border-radius:9px;background:#14141e;color:#f4f0fa;font-size:12px;line-height:1.2}
+.search-filters .filter-control input::placeholder{color:#81798e}
+.search-filters .filter-check{display:flex;align-items:center;justify-content:flex-start;gap:9px;min-height:44px;align-self:end;padding:0 12px;border:1px solid #40394d;border-radius:12px;background:#1b1925;color:#dbd4e5;font-size:11px;font-weight:650}
+.search-filters .filter-check input[type=checkbox]{width:17px;height:17px;flex:none;margin:0;accent-color:#bba7ff}
+.filter-color-row{display:flex;align-items:center;gap:10px;min-height:42px}
+.filter-color-row>input[type=color]{width:48px;height:42px;padding:4px;border:1px solid #4a4357;border-radius:9px;background:#14141e;cursor:pointer}
+.search-filters .filter-color-row .filter-check{min-height:38px;padding:0 8px;border:0;background:transparent}
+.filter-note{margin:8px 1px 2px;padding:10px 12px;border:1px solid #4b4358;border-radius:11px;background:#201d2a;color:#bcb2ca;font-size:10px;line-height:1.55}
+.visual-filter-details summary{min-height:56px;padding-left:15px}
+.visual-search-filters{grid-template-columns:minmax(0,1fr) auto auto;align-items:end;gap:10px;margin:0;padding:12px 14px 14px;border-top:1px solid #ffffff12}
+.visual-search-filters>button{min-width:132px;border:1px solid #65557e;border-radius:10px;background:#342b45;color:#f0eaff;font-size:11px;font-weight:750}
+.visual-search-filters>button:disabled{opacity:.45}
+@media(max-width:760px){.search-filters.filter-market-grid,.search-filters.filter-product-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.visual-search-filters{grid-template-columns:1fr 1fr}.visual-search-filters .filter-control{grid-column:1/-1}.visual-search-filters>button{width:100%;min-width:0}}
+@media(max-width:480px){.filter-details summary{gap:9px;padding-inline:11px}.filter-summary-icon{width:34px;height:34px}.filter-market-pill{font-size:9px!important;padding:6px 8px!important}.search-filters.filter-market-grid,.search-filters.filter-product-grid{grid-template-columns:1fr}.filter-panel{padding-inline:11px}.visual-search-filters{grid-template-columns:1fr}.visual-search-filters .filter-control{grid-column:auto}}
+@media(prefers-reduced-motion:reduce){.filter-summary-chevron{transition:none}}
+.filter-details summary .filter-summary-icon,.filter-details summary .filter-summary-copy{margin:0}
+.filter-details summary .filter-summary-icon{color:#d4c4ff}
+.filter-details summary .filter-summary-copy{color:#f2edf9;font-weight:500}
+.filter-details .search-filters.filter-market-grid,.filter-details .search-filters.filter-product-grid{padding:0}
+.filter-details .visual-search-filters{padding:12px 14px 14px}
