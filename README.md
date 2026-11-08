@@ -1,84 +1,72 @@
-<div align="center">
-
 # ShopSide
 
-### Move in together, even when you're apart.
+**A little closer, even from afar.**
 
-**A shared shopping space for life's next chapter.**
+ShopSide is a collaborative shopping app. People share a room, discover products, compare options, discuss choices, and plan purchases together. Its Deal Rescue workflow connects participating fictional ShopSide merchants to buyer-approved negotiation limits. Real Channel3 listings remain retailer purchases; ShopSide does not claim their inventory or charge them through PayPal.
 
-Plan a home, discover real products, and make the decision together.
+The app supports shared rooms for up to four participants, live chat and decisions, Channel3 product search, Smart Bundle, optional Move-in Studio visualization, Price Watch, a merchant portal, and PayPal Sandbox checkout for ShopSide-owned sample products. The sample merchant catalog is fictional: no goods ship and sandbox payments do not charge real money.
 
-`Next.js` · `FastAPI` · `Google ADK + Gemini` · `Channel3` · `Three.js` · `PayPal Sandbox` · `PostgreSQL`
+## Product and payment boundaries
 
-[Get started](#get-started) · [How it works](#how-it-works) · [Configuration](#configuration) · [Cloud Run](#deploying-to-cloud-run) · [Testing](#testing)
+| Product source | Discovery and comparison | Purchase path |
+| --- | --- | --- |
+| Channel3 live products | Real product records and retailer offers, with observed prices and availability | Open a fresh tracked retailer link and pay the retailer directly |
+| ShopSide sandbox merchants | Fictional ShopSide-owned test catalog with tenant inventory and merchant policies | PayPal Sandbox CAPTURE checkout, or a short AUTHORIZE hold for an explicitly mapped merchant |
 
-</div>
+An external Channel3 price alert can create a request to find a ShopSide-owned alternative. The alternative may be a different item. The alert never authorizes payment for the external retailer product.
 
-![Illustrative interior for ShopSide's Move-In Studio](apps/web/public/products/next-chapter.webp)
+### Implemented workflows
 
-## The idea
+- **Shared shopping:** private room membership, invitations, WebSocket updates, chat, reactions, shortlist, comparison, shared plans, and per-person approvals.
+- **Channel3 discovery:** search, agentic search, structured price, brand, retailer, category, condition and color filters, product detail, variants, similar items, retailer offers, price history, image URL search, product URL lookup, affiliate attribution, and affiliate reporting when the Channel3 account permits it.
+- **Smart Bundle:** ADK tools gather real Channel3 candidates; deterministic backend checks validate products, offers, categories, currency and budget. Bundles are observed-price suggestions, not compatibility guarantees or one-click retailer orders.
+- **Move-in capabilities:** editable move-in mission and optional Three.js room. The 3D room uses markers and illustrative dressing; it does not verify product dimensions or fit. Ordinary shopping and shared rooms do not require WebGL.
+- **Price Watch:** exact product and selected variant, retailer scope, threshold, pause/resume/cancel, shared subscription reuse, and price or availability alerts from signed Channel3 webhooks. Channel3 subscriptions operate in en-US/USD. Alerts may lag retailer changes.
+- **Deal Rescue:** consented merchant matching, quantity, selected merchant, buyer maximum, negotiation preference, seller review requirement, bounded buyer-agent counteroffers, expiry, and revocation. Merchants can require human review.
+- **PayPal Sandbox:** ordinary buyer-approved CAPTURE checkout remains available. For an explicitly mapped ShopSide merchant, the buyer can approve a capped AUTHORIZE hold before the seller responds. Settlement rechecks merchant, SKU, quantity, stock, buyer policy, currency, amount, expiry and PayPal readback. Lower capture is individually gated. Without verified lower-capture capability, ShopSide voids the hold and asks the buyer to approve a new checkout.
+- **Receipts and webhooks:** completed owned-merchant orders have a receipt and decision timeline. PayPal and Channel3 webhooks require signature verification; processing jobs read provider state before changing payment or alert state.
 
-Setting up a new home involves more than finding a product. Families and friends have different priorities, a limited budget and a long list of decisions. ShopSide gives them one room to explore options, talk through tradeoffs and agree on what comes next.
+## Prepared judge room
 
-Move-In Studio and general shopping share the same shared room for up to four people. Members join with a private invitation, see updates live and can reconnect to their saved state. A shared choice requires approval by every current member. No account is required for the guest flow.
+To create a real shared room with Person A and Person B, two spatially eligible catalog items, marker reactions, and chat, run the one-time seeder from a checkout with the Python API dependencies installed:
 
-| Experience | What it does |
-| --- | --- |
-| **Move-In Studio** | Turn a brief into an editable mission with budget, priorities and constraints; Gemini asks at most four follow-up questions. |
-| **Real discovery** | Search Channel3 products, inspect available details and variants, compare retailer offers, and find similar or cheaper options when supported. |
-| **Shared decisions** | Spotlight, shortlist, compare, chat, react and explicitly approve a choice. A reaction is not an approval. |
-| **Live 3D room** | Place, move and react to shared product markers in an interactive Three.js room. |
-| **Why this pick?** | Review known price and product facts, each person's feedback and details still worth checking. |
-| **Voice** | Join an opt-in browser-to-browser WebRTC call with up to four room members, mute and leave controls. The four-person media path requires real-network verification. |
-| **Checkout** | Visit the retailer for Channel3 products; use payer-approved PayPal Sandbox checkout for fictional ShopSide merchant items. |
-| **Shared memory receipt** | An AI-written dual receipt is gated on timestamped approvals and two independently verified sandbox captures. Current checkout supports one payer, so it cannot yet create a dual receipt. |
-| **Relocation desk** | Try an illustrative allowance, category policy and restricted purchase ledger; there is no HR or payroll integration. |
+```sh
+FRONTEND_URL=https://<frontend-cloud-run-url> .venv/bin/python scripts/seed_showcase_room.py
+```
 
-The interior artwork is AI-generated and illustrative. The 3D room uses generic set dressing and product **markers**, not actual product models or verified dimensions; it cannot prove a product will fit. If WebGL cannot start, a simplified interactive room is shown instead. Fictional ShopSide inventory does not ship goods.
+The script uses the frontend proxy, so the room is stored in the configured backend database and live room updates use the regular API. It prints an invite link; a judge can open it, enter a name, and join as another participant. Each run creates a new room, so retain and reuse its invite link for the walkthrough.
 
-## How it works
+## Architecture
 
 ```mermaid
 flowchart LR
-    A[Up to four shoppers<br/>Next.js + Three.js] -->|HTTP + WebSocket<br/>runtime frontend proxy| B[FastAPI<br/>room authentication + state]
-    B --> C[(PostgreSQL / Cloud SQL<br/>or local SQLite)]
-    B -->|conversations + product data| D[Channel3]
-    B -->|mission + collaborative decisions| E[Gemini + Google ADK]
-    B -->|sandbox orders| F[PayPal Sandbox]
-    B -->|signaling| A
-    A <-->|WebRTC audio<br/>direct or via TURN| G[Other room members]
+  Browser[Next.js browser] -->|HTTP and WebSocket| Frontend[Next.js Cloud Run proxy]
+  Frontend -->|BACKEND_URL| API[FastAPI Cloud Run]
+  API --> DB[(Cloud SQL PostgreSQL)]
+  API --> C3[Channel3]
+  API --> AI[Gemini / Vertex AI and Google ADK]
+  API --> PP[PayPal Sandbox]
+  C3 -->|Svix signed webhook| API
+  PP -->|verified webhook| API
+  API --> Tasks[Cloud Tasks]
+  Tasks -->|OIDC protected jobs| API
 ```
 
-- The browser talks to its own frontend origin. The Node server proxies `/api/*` HTTP and WebSocket requests to the runtime `BACKEND_URL`; provider secrets stay on the backend.
-- FastAPI stores room membership, mission, products, preferences, marker reactions, decisions and checkout status. Mutations use room membership, revision checks and command IDs; room snapshots are sent over WebSockets.
-- **Channel3** is the primary source for real shopping conversations, search and product information. General shopping uses its native Conversations API; responses are buffered, not streamed.
-- **Gemini** extracts the structured Move-In mission. The existing **Google ADK** agent helps with shared decisions using room context and tools. It cannot authorize payment or substitute an AI suggestion for human approval.
-- **PayPal Orders v2** creates and captures eligible ShopSide sandbox orders. The official PayPal MCP adapter is restricted to reading the authenticated room's bound order; it does not authorize spending.
-- External Channel3 offers keep their retailer URLs and are never charged through the ShopSide merchant account.
+The browser uses the frontend origin for API calls. The Next.js server forwards HTTP and WebSocket traffic to the backend URL configured at runtime. Provider credentials stay on the backend. FastAPI persists room state and payment records in PostgreSQL in production; SQLite is for local development. Cloud Tasks dispatch merchant and reconciliation jobs. Current room coordination and locks assume one API instance, so do not scale the backend horizontally until shared coordination is implemented.
 
-## Get started
+## Local development
 
-### Prerequisites
-
-- Python 3.12 and Node.js 24 with npm.
-- SQLite for local development, or a PostgreSQL database. Cloud SQL PostgreSQL 17.11 is the intended GCP database.
-- Provider credentials for the features you want to exercise. Rooms and the fictional catalog can run without live shopping, AI or PayPal credentials; provider-dependent actions report errors until configured.
-
-### Local setup
-
-From the repository root:
+Prerequisites: Python 3.12, Node.js 24, npm, and optionally SQLite or PostgreSQL.
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r services/api/requirements.lock
 npm ci --prefix services/paypal-mcp
 npm ci --prefix apps/web
-
-# Optional: edit a local copy with your own settings. Never commit secrets.
 cp .env.example .env
 ```
 
-Load the desired variables from `.env` into your shell or set them through your environment manager. Then, in one terminal:
+Configure optional local credentials in `.env` and load them into the shell. Treat `.env` as executable shell input; never commit it. Start the API:
 
 ```bash
 export SHOPSIDE_DB="$PWD/shopside.sqlite3"
@@ -86,140 +74,117 @@ bash scripts/db/migrate.sh
 PYTHONPATH=services/api .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
-In a second terminal:
+In another terminal:
 
 ```bash
 cd apps/web
 BACKEND_URL=http://127.0.0.1:8000 npm run dev
 ```
 
-Open **http://localhost:3000**. Create a room, copy the invite and open it in a separate browser profile with a different name. For a quick local startup, `bash scripts/dev.sh` installs dependencies, loads a local `.env` if present, applies migrations and starts both services. Only use an `.env` file you trust: the script sources it as shell input.
+Open `http://localhost:3000`, create a room and open its invitation in another browser profile. `bash scripts/dev.sh` is also available for local setup and startup. Without `DATABASE_URL`, the API uses `SHOPSIDE_DB` or `/tmp/shopside.sqlite3`.
 
-`SHOPSIDE_DB` is the SQLite file path; without it the API uses `/tmp/shopside.sqlite3`. `DATABASE_URL` takes precedence when set. Configure exactly **one API process and one worker** for the current MVP.
+Provider credentials are optional for local rooms and fictional catalog browsing. Live Channel3, AI, PayPal, webhook and Cloud Tasks features require their corresponding configuration. The three sandbox merchants start opted out and paused. Supply three distinct merchant tokens securely, then enable each merchant in `/merchant` for tests that need merchant responses.
 
-### Try the two-person journey
+## Configuration reference
 
-1. Choose **Move-In Studio** and enter: “We're moving next Friday and need a home office and kitchen under $500.” Review or edit the mission.
-2. Choose **Find essentials with Channel3**. Focus a real result, inspect its details and retailer offers, and add it to the shared plan.
-3. Invite a friend. Place a product marker in the 3D room, react to it, share preferences and discuss. Both people can explicitly approve a plan item.
-4. Open a Channel3 offer at its retailer. For the fictional ShopSide merchant catalog, the designated payer can review a USD quote and approve a PayPal Sandbox order.
-
-The 3D layout, reactions and decisions are shared. Cost shares record an allocation only: they do not charge either person or establish that both accepted the allocation.
-
-## Configuration
-
-Keep credentials on the server in secure environment settings or GCP Secret Manager. Do not place secrets in source control, browser code or chat. `.env.example` lists local settings; update `SHOPSIDE_DB` for your machine if using SQLite.
+Set secrets through a local secret store or GCP Secret Manager. Do not put secrets in browser variables, committed files, logs, or chat.
 
 | Variable | Service | Purpose |
 | --- | --- | --- |
-| `BACKEND_URL` | Frontend | API HTTP(S) origin selected at server startup, such as `http://127.0.0.1:8000`; no path or credentials. |
-| `BACKEND_ID_TOKEN_AUDIENCE` | Frontend | Optional API service URL for an IAM-protected Cloud Run backend. The frontend service account needs `roles/run.invoker`. |
-| `DATABASE_URL` | API | PostgreSQL connection string. Required in Cloud Run; use Secret Manager. |
-| `SHOPSIDE_DB` | API | Local SQLite path when `DATABASE_URL` is absent. |
-| `WEB_ORIGIN` | API | Exact public frontend origin, including scheme and port when applicable. |
-| `COOKIE_SECURE` | API | Set `true` when the public frontend uses HTTPS. |
-| `CHANNEL3_API_KEY` | API | Server-side Channel3 API key. |
-| `AI_PROVIDER` | API | `vertex-express`, `vertex` or `developer`; for this project use `vertex-express` if using a Vertex AI express key. |
-| `VERTEX_API_KEY` or `GEMINI_API_KEY` | API | Vertex AI express key; `GEMINI_API_KEY` also supports the Developer API when that provider is selected. |
-| `GEMINI_MODEL` | API | A tool-capable model ID available to the configured account. |
-| `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` | API | Project and region for standard Vertex AI with Application Default Credentials; express mode does not need the project selector. |
-| `PAYPAL_ENV` | API | Use `sandbox`; the implemented payment integration is sandbox-only. |
-| `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_MERCHANT_ID` | API | Credentials and merchant ID for the same PayPal sandbox business account. |
-| `WEBRTC_ICE_SERVERS` | API | Optional JSON array of STUN/TURN server entries. Without it the application uses a public STUN server. |
-| `RELOCATION_ADMIN_TOKEN` | API | Optional long, random bearer token for the illustrative relocation desk; it is disabled when unset. |
+| `BACKEND_URL` | Frontend | Backend HTTP(S) origin, no path or credentials. Set at runtime on Cloud Run. |
+| `BACKEND_ID_TOKEN_AUDIENCE` | Frontend | Optional audience for an IAM-protected backend. Grant the frontend runtime identity `roles/run.invoker`. |
+| `DATABASE_URL` | API | PostgreSQL connection. Required on Cloud Run; can use the Cloud SQL Unix socket format below. |
+| `SHOPSIDE_DB` | API | Local SQLite database path when `DATABASE_URL` is absent. |
+| `WEB_ORIGIN` | API | Exact public frontend origin, including scheme. |
+| `COOKIE_SECURE` | API | Set `true` when the frontend is served over HTTPS. |
+| `CHANNEL3_API_KEY` | API | Server-side Channel3 key. |
+| `CHANNEL3_WEBHOOK_SECRET` | API | Svix signing secret from Channel3 webhook settings. |
+| `PAYPAL_ENV` | API | Must be `sandbox` for the implemented checkout. |
+| `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_MERCHANT_ID` | API | PayPal Sandbox credentials and the payee used by standard checkout. |
+| `PAYPAL_WEBHOOK_ID` | API | PayPal Sandbox webhook ID used to verify webhook signatures. |
+| `PAYPAL_MERCHANT_IDS_JSON` | API | Optional JSON map from ShopSide merchant IDs to verified PayPal Sandbox payee IDs. Enables AUTHORIZE for mapped merchants. |
+| `PAYPAL_PARTIAL_CAPTURE_MERCHANT_IDS_JSON` | API | Optional JSON array of merchant IDs whose lower-amount capture capability has been verified. Keep unset otherwise. |
+| `AI_PROVIDER` | API | `vertex-express`, `vertex`, or `developer`. |
+| `VERTEX_API_KEY` or `GEMINI_API_KEY` | API | Vertex AI express key, or Gemini Developer API key when selected. |
+| `GEMINI_MODEL` | API | Model ID available to the selected provider. |
+| `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` | API | Project and location for standard Vertex AI and Cloud Tasks. |
+| `SHOPSIDE_MERCHANT_1_TOKEN` through `_3_TOKEN` | API | Distinct merchant portal tokens, at least 24 characters. Store as secrets. |
+| `SHOPSIDE_MERCHANT_1_DOMAIN` through `_3_DOMAIN` | API | Optional merchant research labels; not proof of Channel3 inventory ownership. |
+| `CLOUD_TASKS_LOCATION`, `CLOUD_TASKS_QUEUE`, `CLOUD_TASKS_TARGET_URL`, `CLOUD_TASKS_INVOKER_SERVICE_ACCOUNT` | API | Cloud Tasks queue, backend target and OIDC invoker. Set with `GOOGLE_CLOUD_PROJECT`; omit all for local fallback. |
+| `CLOUD_TASKS_OIDC_AUDIENCE` | API | Optional audience override; defaults to the backend target URL. |
+| `MERCHANT_JOB_TOKEN` | API | Local-only protected merchant-job recovery token. |
 
-For example, a TURN provider supplies values in this shape:
-
-```json
-[{"urls":"stun:stun.l.google.com:19302"},{"urls":"turn:your-turn-host:3478","username":"YOUR_TURN_USERNAME","credential":"YOUR_TURN_CREDENTIAL"}]
-```
-
-Treat TURN credentials as secrets. STUN helps browsers find a route; TURN relays encrypted media when direct connections fail. ShopSide's WebSocket coordinates the connection; voice is not sent to Gemini. A TURN relay and a real two-network call are still needed for reliable cross-network verification.
-
-The relocation token is separate from room membership. Allocation codes are reusable bearer capabilities and must be shared privately. The current shared-token desk is an illustration, not production employer identity or tenant isolation. Its ledger returns sandbox purchase summaries without private room chat or call data. The approval workflow is not connected; checkout blocks items requiring approval. The IAM-authenticated frontend proxy uses the `Authorization` header for its backend identity token, so the relocation desk's bearer-token authentication needs an alternate authentication design before those two modes can be used together.
-
-## Database scripts
-
-Alembic migrations are versioned under [`services/api/alembic/versions`](services/api/alembic/versions). They create rooms and payments, inventory, and relocation policies. Room-level features, including 3D markers and reactions, are stored in room state and do not require an additional migration.
-
-| Command | Purpose |
-| --- | --- |
-| `bash scripts/db/migrate.sh` | Apply all pending migrations to the configured database. |
-| `bash scripts/db/migrate.sh current` | Show the current Alembic revision. |
-| `PYTHONPATH=services/api .venv/bin/python scripts/db/import_sqlite_to_postgres.py /path/to/source.sqlite3` | Copy a SQLite database into an **empty, migrated PostgreSQL database** selected by `DATABASE_URL`. |
-
-The migration wrapper prefers `.venv/bin/alembic`, then an `alembic` on `PATH`; set `ALEMBIC_BIN` to use a different executable. The importer reads SQLite in a read-only transaction, copies rooms, members, payments, inventory and relocation policies, and refuses a nonempty destination. Older SQLite databases without a relocation-policy table are supported. It never deletes or modifies the source.
-
-Before importing, **back up both databases and stop application traffic**. Apply migrations to a new empty PostgreSQL destination, run the importer before starting the API's inventory seeding, and verify the data before switching traffic. Never use a production database as a test target.
-
-## Deploying to Cloud Run
-
-1. Build the frontend using [`apps/web/Dockerfile`](apps/web/Dockerfile), and the API using [`services/api/Dockerfile`](services/api/Dockerfile) with `services/` as its build context. Both honor Cloud Run's `PORT`.
-2. Attach Cloud SQL PostgreSQL 17.11 to the API service and give its service account `roles/cloudsql.client`. Inject `DATABASE_URL` from Secret Manager. For a Unix socket, the format is:
-
-   ```text
-   postgresql+psycopg://DB_USER:URL_ENCODED_PASSWORD@/DB_NAME?host=/cloudsql/PROJECT_ID:REGION:INSTANCE_ID
-   ```
-
-3. Run the migrations once as a controlled Cloud Run Job with the same image, database attachment and identity: `alembic -c /app/alembic.ini upgrade head`. Do not race migrations with app traffic. The API also creates missing baseline tables and seeds fictional inventory at startup for compatibility.
-4. Set the frontend `BACKEND_URL` to the API origin. If the API is IAM-protected, set `BACKEND_ID_TOKEN_AUDIENCE` and grant the frontend service account `roles/run.invoker`. Runtime backend selection does not require a frontend rebuild.
-5. Set `WEB_ORIGIN` to the exact HTTPS frontend origin and `COOKIE_SECURE=true` on the API. Configure the provider secrets and optional TURN or relocation settings described above.
-6. Use **one API instance and one worker**, route to one revision and avoid overlapping revisions while testing. WebSocket subscribers, signaling, rate limits and operation locks are process-local. Cloud Run can temporarily exceed scaling limits; horizontal scaling needs shared coordination before it is safe. WebSocket timeouts can disconnect users, so use the existing reconnect control.
-
-### Collaboration settings and troubleshooting
-
-- Deploy the **API first**, then the frontend. The new API accepts existing membership cookies while the new frontend assigns a separate HttpOnly membership cookie to each tab. This avoids one browser window changing another person's identity. Refresh already-open tabs after the rollout.
-- Set frontend `BACKEND_URL` to the backend Cloud Run **origin**. Open and share links from the same public frontend origin; don't send participants directly to the backend URL.
-- Set backend `WEB_ORIGIN` to that exact frontend origin, such as `https://shop.example.com` (no trailing slash), and set `COOKIE_SECURE=true` for HTTPS. A mismatch can reject writes and WebSockets; missing cookies can prevent room membership.
-- Point the backend at durable Cloud SQL via `DATABASE_URL`; local container files are ephemeral. Run one API worker and one active backend instance/revision for this MVP. The frontend reconnects automatically if a room socket drops, but process-local fanout and locks do not coordinate separate API instances. Raising the instance limit safely requires shared pub/sub and distributed concurrency controls, not just a shared database or Cloud Storage.
-- Configure an appropriate Cloud Run request timeout for long-lived WebSockets. They can still disconnect, and the app reconnects and reloads the latest room snapshot. A second member should open the invitation, enter a different name and join; their existing chat history appears in the room.
-
-Cloud SQL connectivity, the IAM-protected Cloud Run proxy, live cross-network audio and a complete PayPal buyer approval/capture have not been verified end to end in this workspace. This is a deployment guide, not a record that a deployment has occurred.
-
-## Testing
-
-```bash
-# Backend: SQLite tests use an isolated temporary database.
-PYTHONPATH=services/api .venv/bin/python -m pytest -q services/api/tests
-
-# Frontend production build.
-npm run build --prefix apps/web
-
-# With the API and frontend running locally:
-cd apps/web
-SHOPSIDE_TEST_URL=http://localhost:3000 npx playwright test tests/invite-chat.spec.ts tests/room.spec.ts tests/move-in.spec.ts tests/room-preview.spec.ts tests/room-fallback.spec.ts tests/budget-consistency.spec.ts tests/family-room.spec.ts tests/family-voice-signaling.spec.ts --workers=1
-```
-
-Playwright expects Chromium; set `CHROMIUM_PATH` if it is not at `/usr/bin/chromium`. To run against a **disposable** PostgreSQL database, migrate it first and explicitly set `SHOPSIDE_TEST_DATABASE_URL`; the backend test fixture ignores an ambient `DATABASE_URL` to avoid touching a deployment database. The tests create room and payment records and reserve fictional inventory.
-
-Live provider tests are opt-in and make real provider requests. With configured credentials, `PYTHONPATH=services/api .venv/bin/python scripts/verify_live_discovery.py` creates a verification room and calls Vertex AI and Channel3. Review the Playwright tests before enabling their live flags. Live tests can consume quota; never treat a mocked test as proof of provider checkout or audio.
-
-## Status and limits
-
-- Channel3 conversations, search, product detail, similar products, and default and agentic search were exercised against a configured account. Vertex AI express mission extraction and collaborative ADK calls were also exercised. Results and availability can change.
-- A shared memory receipt requires two timestamped approvals and two independently verified sandbox payments. Existing checkout supports only one payer, so the receipt remains unavailable until a separately authorized two-payer checkout exists; prior approvals without timestamps are not backfilled.
-- A real PayPal **sandbox order was created**, but buyer approval and capture have not been verified end to end. Never assume a completed purchase without provider read-back. Unknown payment outcomes require reconciliation before retrying.
-- The existing backend and independent desktop/mobile browser tests cover room synchronization, four-member approval, marker placements and reactions, budget display, the no-WebGL fallback, cart boundaries and mocked payment behavior. Four-person voice signaling is tested with mocked WebRTC connections; real media and provider tests are separate.
-- Product URL lookup, image search, price history, streaming assistant responses, affiliate reporting and product-alert webhooks are not implemented. The 3D preview is illustrative, not an accurate model or fit measurement.
-- Relocation eligibility uses the known category and USD price of fictional merchant products. Administrator approvals, employer identity isolation and real HR integrations are not implemented.
-- Room coordination and rate limits are in memory; PostgreSQL persistence alone does not enable multi-instance synchronization. Voice may require TURN; four-person audio and real cross-network calls have not been verified end to end.
-
-## Project layout
+Cloud SQL Unix socket example:
 
 ```text
-apps/web/                     Next.js UI, Three.js room and runtime API proxy
-services/api/app/             FastAPI, room state, AI, discovery and checkout
-services/api/alembic/         Versioned database migrations
-services/paypal-mcp/          Pinned official PayPal MCP dependency
-services/api/tests/           Backend regression tests
-apps/web/tests/               Browser and runtime proxy tests
-scripts/db/                   Migration and SQLite-to-PostgreSQL utilities
-scripts/dev.sh                Local setup and startup
-scripts/verify_live_discovery.py  Opt-in Vertex + Channel3 verification
+postgresql+psycopg://DB_USER:URL_ENCODED_PASSWORD@/DB_NAME?host=/cloudsql/PROJECT_ID:REGION:INSTANCE_ID
 ```
 
-Product imagery for the fictional catalog is illustrative. The headphones vector is original project artwork; the headphones rendering and Move-In interior are AI-generated illustrations and do not depict verified inventory. Real Channel3 images and offers are attributed to their providers and retailers.
+`PAYPAL_MERCHANT_IDS_JSON` and `PAYPAL_PARTIAL_CAPTURE_MERCHANT_IDS_JSON` are JSON configuration values, not PayPal secrets. Map only merchant accounts you have verified. A temporary authorization is not a long-term payment mandate. Vaulting and future off-session mandates are not implemented.
 
-## License
+## Database migrations
 
-See [LICENSE](LICENSE).
+Alembic revisions are in `services/api/alembic/versions`. Apply migrations once before starting the new revision:
+
+```bash
+bash scripts/db/migrate.sh
+bash scripts/db/migrate.sh current
+```
+
+Revision `0005` adds durable Channel3 webhook events and watches, PayPal webhook payloads, and settlement jobs. Run migrations as a controlled deployment job, not concurrently from every application instance. The API retains startup table creation for its baseline tables.
+
+The SQLite-to-PostgreSQL importer is `scripts/db/import_sqlite_to_postgres.py`. Use it only with a backup and an empty, migrated PostgreSQL destination; stop application traffic during import and verify the data before switching. It does not modify the SQLite source.
+
+## GCP Cloud Run deployment
+
+Use separate Cloud Run services for the frontend and API. Deploy the API first, apply the migration job, then deploy the frontend with `BACKEND_URL` set to the API origin. Keep the backend IAM protected when possible; Cloud Tasks uses OIDC identity to call protected worker endpoints.
+
+1. Enable Cloud Run, Cloud SQL, Cloud Tasks and Secret Manager APIs. Create Cloud SQL PostgreSQL 17.11 and attach it to the backend service. Grant the backend runtime identity `roles/cloudsql.client` and access only to the secrets it needs.
+2. Build and deploy the API from `services/api/Dockerfile` using the `services/` directory as build context. Set `DATABASE_URL`, `WEB_ORIGIN`, `COOKIE_SECURE=true`, provider settings, and the correct region/project variables.
+3. Run `alembic -c /app/alembic.ini upgrade head` once in a Cloud Run Job using the API image, database attachment and runtime identity. Verify the job succeeds before routing traffic.
+4. Create a Cloud Tasks queue and a dedicated task invoker service account. Grant the task account `roles/run.invoker` on the backend. Grant the backend producer identity permission to create tasks and `iam.serviceAccountUser` on the invoker identity. Set all Cloud Tasks variables on the backend.
+5. Register `https://<backend-origin>/api/channel3/webhooks` in Channel3 and store the supplied Svix secret as `CHANNEL3_WEBHOOK_SECRET`. Register `https://<backend-origin>/api/paypal/webhook` in the PayPal Sandbox app and set `PAYPAL_WEBHOOK_ID`.
+6. Deploy the frontend from `apps/web/Dockerfile`. Set `BACKEND_URL` at runtime to the backend origin. If the backend requires IAM, set `BACKEND_ID_TOKEN_AUDIENCE` to that service URL and grant the frontend identity `roles/run.invoker`.
+7. Keep the API at one instance for this release. Current locking, room coordination and some job claims are process-local. Cloud SQL persistence does not make multiple API instances safe.
+8. Configure Cloud Scheduler with OIDC to call `POST /api/internal/paypal-settlements/recover` for pending settlement jobs and `POST /api/internal/paypal-authorizations/expire` to void expired or revoked authorizations. The token email must match `CLOUD_TASKS_INVOKER_SERVICE_ACCOUNT`, because the backend verifies that exact identity; grant the Cloud Scheduler service agent permission to mint its OIDC token. Configure an appropriate timeout for WebSockets; browsers reconnect and reload the latest room state after disconnection.
+
+Do not make a private backend public only to admit tasks. Match the task URL and audience to the deployed backend URL, and verify the task invoker identity. Cloud Run and Cloud Tasks IAM, Cloud SQL connectivity, provider webhook delivery, and PayPal buyer approval/capture must be checked in the target GCP project.
+
+## Verification
+
+Run locally:
+
+```bash
+PYTHONPATH=services/api .venv/bin/python -m pytest -q services/api/tests
+npm run build --prefix apps/web
+```
+
+Browser tests are in `apps/web/tests` and run with Playwright against a locally running app. Use only disposable databases for tests; tests create rooms, payments and fictional inventory. The live discovery script `scripts/verify_live_discovery.py` calls Vertex AI and Channel3 and may consume quota. Review its behavior before running it with live credentials.
+
+Automated tests do not prove a deployed Cloud Tasks delivery or interactive PayPal buyer authorization and capture. A PayPal order in `CREATED` status is not a completed payment. ShopSide marks payment complete only after provider readback verifies the capture.
+
+## Current limitations
+
+- Channel3 Price Watch subscriptions are limited to en-US/USD. Webhook alerts reflect when Channel3 detects an offer change, not an instant retailer update.
+- PayPal is Sandbox only. The ordinary CAPTURE path and bounded AUTHORIZE workflow are implemented, but interactive buyer approval, capture and target-project webhook delivery still need to be verified in your GCP and PayPal Sandbox setup. Lower-amount capture stays disabled unless explicitly mapped as verified.
+- No Channel3 programmatic checkout is enabled. External listings are purchased at their retailers, and ShopSide does not collect PayPal funds for them.
+- No PayPal vaulting, long-lived payment mandate, or production off-session charging is implemented.
+- Cloud Run multi-instance room coordination is not ready. Keep one backend instance until room locks, rate limits, payment claims and subscription lifecycle coordination use shared distributed primitives.
+- Shipping and tax are zero for fictional ShopSide sandbox items. The app does not calculate delivered totals. Real retailer prices and stock can change.
+- The 3D room uses illustrative markers, not product models or verified fit measurements. Smart Bundle compatibility and AI match scores are recommendations, not factual guarantees.
+- Channel3 affiliate reporting depends on API-key entitlement and provider attribution data.
+
+## Repository map
+
+```text
+apps/web/                         Next.js app, runtime proxy, browser tests
+services/api/app/                 FastAPI room, discovery, agent, merchant and payment code
+services/api/alembic/versions/    Versioned database migrations
+services/api/tests/               Backend regression tests
+services/paypal-mcp/              Pinned PayPal MCP dependency
+scripts/db/                       Migration and SQLite import helpers
+scripts/dev.sh                    Local development startup
+scripts/verify_live_discovery.py  Opt-in live Vertex AI and Channel3 check
+```
+
+See [LICENSE](LICENSE) for the project license.

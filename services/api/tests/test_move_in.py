@@ -1,9 +1,15 @@
 from types import SimpleNamespace
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+import pytest
 from app.main import app
 from app.move_in import Allocation, Mission, PercentageAllocation, allocate_percentages
-import pytest
+
+def test_new_room_retains_the_selected_shopping_mode():
+    client=TestClient(app)
+    created=client.post('/api/rooms',json={'name':'A','mode':'move_in','initial_request':'Sofa under $700'}).json()['room']
+    assert created['mode']=='move_in'
+    assert created['move_in']['mission']['budget_cents']==70000
 
 def test_mission_validation_and_exact_cents():
     with pytest.raises(ValidationError): Mission(budget_cents=-1)
@@ -60,28 +66,6 @@ def test_cheaper_similar_uses_matching_currency(monkeypatch):
     result=c.post(base+'/product/cheaper',json={'provider_id':'original','revision':1,'command_id':'cheap'})
     assert result.status_code==200 and result.json()['count']==1
     ids={p['id'] for p in c.get(base).json()['discovery']};assert 'channel3:cheap' in ids and 'channel3:other' not in ids
-
-def test_relocation_policy_auth_privacy_and_checkout_rules(monkeypatch):
-    from app.move_in import RelocationPolicy,policy_eligibility
-    policy=RelocationPolicy(name='Relocation',allowance_cents=5000,eligible_categories=['home office'],approval_threshold_cents=3000)
-    assert policy_eligibility(policy,'home office',2000,'USD',0)['eligible']
-    assert policy_eligibility(policy,'home office',4000,'USD',0)['approval_required']
-    assert not policy_eligibility(policy,'kitchen',100,'USD',0)['eligible']
-    assert not policy_eligibility(policy,'home office',100,'EUR',0)['eligible']
-    assert not policy_eligibility(policy,'home office',2000,'USD',4000)['eligible']
-    monkeypatch.setenv('RELOCATION_ADMIN_TOKEN','test-admin-secret')
-    admin=TestClient(app);employee=TestClient(app);guest=TestClient(app)
-    assert admin.post('/api/relocation/policies',json=policy.model_dump()).status_code==403
-    response=admin.post('/api/relocation/policies',json=policy.model_dump(),headers={'authorization':'Bearer test-admin-secret'})
-    assert response.status_code==200;code=response.json()['code']
-    created=employee.post('/api/rooms',json={'name':'Employee','mode':'move_in','relocation_code':code}).json();base='/api/rooms/'+created['room']['id']
-    assert employee.post(base+'/commands',json={'kind':'chat','value':'Private discussion','revision':0,'command_id':'chat'}).status_code==200
-    assert guest.get('/api/relocation/policies/'+code+'/ledger').status_code==403
-    ledger=admin.get('/api/relocation/policies/'+code+'/ledger',headers={'authorization':'Bearer test-admin-secret'}).json()
-    assert 'Private discussion' not in str(ledger) and ledger['entries']==[]
-    assert employee.post(base+'/commands',json={'kind':'cart','value':'11','revision':1,'command_id':'cart'}).status_code==200
-    assert employee.post(base+'/relocation/check',json={'product_id':'11','revision':2}).json()['approval_required'] is True
-    assert employee.post(base+'/quote').status_code==409
 
 def test_shared_room_placements_validate_and_sync():
     import json

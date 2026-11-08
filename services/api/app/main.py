@@ -1,12 +1,14 @@
-import json, os, secrets, threading, asyncio, time, re
+import json, os, secrets, threading, asyncio, time, re, hashlib
 from datetime import datetime, timezone
 from fastapi import WebSocket, WebSocketDisconnect
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 from .database import Database, make_engine
 from .discovery import Search, AdvancedSearch, search_products, advanced_search, product_details, similar_products
+from .checkout_capabilities import CheckoutMode, require_checkout_mode
 from .ai_config import configured_client
-from .move_in import Mission, MissionResponse, MissionTurn, MissionEdit, PlanAction, Allocation, PercentageAllocation, allocate_percentages, RelocationPolicy, PolicyCheck, policy_eligibility, explicit_initial_usd_budget
+from .smart_bundle_agent import interpret_with_adk, run_bundle_agent, run_alternative_agent
+from .move_in import Mission, MissionResponse, MissionTurn, MissionEdit, PlanAction, Allocation, PercentageAllocation, allocate_percentages, explicit_initial_usd_budget
 
 app = FastAPI(title='ShopSide')
 limits={}
@@ -14,8 +16,9 @@ limits={}
 async def throttle(request,call_next):
     if request.method not in ['GET','HEAD','OPTIONS'] and request.headers.get('origin') and request.headers['origin']!=os.getenv('WEB_ORIGIN','http://localhost:3000'):
         return Response('Origin not allowed',status_code=403)
-    if '/join/' in request.url.path or request.url.path.startswith('/api/relocation/') or request.url.path.endswith(('/agent','/concierge','/move-in/turn','/memory-receipts')):
-        key=(request.client.host,'ai' if request.url.path.endswith(('/agent','/concierge','/move-in/turn','/memory-receipts')) else 'join')
+    bundle_work=request.url.path.endswith(('/intent','/bundle/search')) or ('/bundle/alternatives/' in request.url.path and request.url.path.endswith('/search'))
+    if '/join/' in request.url.path or bundle_work or request.url.path.endswith(('/agent','/concierge','/move-in/turn','/memory-receipts')):
+        key=(request.client.host,'bundle' if bundle_work else 'ai' if request.url.path.endswith(('/agent','/concierge','/move-in/turn','/memory-receipts')) else 'join')
         now=time.monotonic(); hits=[t for t in limits.get(key,[]) if now-t<60]
         if len(hits)>=10: return Response('Too many attempts; retry in a minute',status_code=429)
         limits[key]=hits+[now]
@@ -30,16 +33,14 @@ engine=make_engine()
 db=Database(engine)
 db.execute('CREATE TABLE IF NOT EXISTS rooms(id TEXT PRIMARY KEY, invite TEXT UNIQUE, state TEXT)')
 db.execute('CREATE TABLE IF NOT EXISTS members(token TEXT PRIMARY KEY, room TEXT, name TEXT)')
-db.execute('CREATE TABLE IF NOT EXISTS relocation_policies(id TEXT PRIMARY KEY, state TEXT NOT NULL)')
 catalog = [dict(id=str(i), name=n, price=p, currency='USD', description='Fictional sample headphones · ShopSide collection') for i,(n,p) in enumerate([('Sunday Studio',8900),('Everyday Air',6900),('Quiet Hours',9900),('City Rhythm',7900),('Soft Signal',5900),('Open Road',9500),('Little Escape',4900),('Evening Edit',8500),('Atlas Checked Case',15900),('Weekender Cabin Case',11900),('Journey Large Case',18900)])]
 for i,(name,price,category) in enumerate([('Home Office Desk Lamp',3900,'home office'),('Everyday Cookware Set',7900,'kitchen'),('Compact Storage Shelf',5900,'living room'),('Soft Cotton Bedding Set',6900,'bedroom')],start=11):
     catalog.append(dict(id=str(i),name=name,price=price,currency='USD',category=category,image='/products/home-essentials.svg',variant='standard',stock=20,attributes={},evidence='Fictional sandbox merchant product; no goods ship.',description='Fictional home essential · sandbox merchant'))
 for product in catalog:
-    if int(product['id']) >= 11:
-        pass
-    elif int(product['id']) >= 8:
+    product['source']='SHOPSIDE_SANDBOX'
+    if 8 <= int(product['id']) < 11:
         product.update(category='luggage',image='/products/luggage.svg',description='Fictional sample luggage · sandbox inventory',variant='standard',stock=20,attributes={'weight':None,'capacity':None,'color':'Sage'},evidence='Fictional fixture; weight and capacity are unknown.')
-    else:
+    elif int(product['id']) < 8:
         product.update(category='headphones',variant='standard',stock=20,attributes={'microphone_quality':None,'connection':'Bluetooth','color':'Sage'},evidence='Fictional fixture specification; no measured microphone data.')
 db.execute('CREATE TABLE IF NOT EXISTS inventory(product TEXT, variant TEXT, stock INTEGER NOT NULL, PRIMARY KEY(product,variant))')
 for product in catalog:
@@ -59,7 +60,6 @@ class Entry(BaseModel):
     title: str = Field(default='Shopping together',max_length=100)
     initial_request: str = Field(default='',max_length=2000)
     mode: str = Field(default='general',pattern='^(general|move_in)$')
-    relocation_code: str = Field(default='',max_length=100)
 class MarkerReaction(BaseModel):
     product_id:str=Field(min_length=1,max_length=200)
     reaction:str=Field(pattern='^(love|price|size|discuss|clear)$')
@@ -74,10 +74,32 @@ class Command(BaseModel):
     revision: int
     kind: str
     value: str = Field(max_length=1000)
+class IntentAnswer(BaseModel):
+    text: str = Field(min_length=1,max_length=400)
+    revision: int = Field(ge=0,strict=True)
+    command_id: str = Field(min_length=1,max_length=100)
 def load(r):
     row=db.execute('SELECT state FROM rooms WHERE id=?',(r,)).fetchone()
     if not row: raise HTTPException(404,'Room not found')
     return json.loads(row[0])
+def room_products(state):
+    """Known products include persistent shortlist snapshots after discovery changes."""
+    products={product['id']:product for product in catalog}
+    products.update(state.get('shortlisted_products') or {})
+    products.update({product['id']:product for product in state.get('discovery',[])})
+    return list(products.values())
+def preserve_shortlisted_products(state):
+    """Backfill snapshots before replacing discovery, including rooms from older releases."""
+    shortlist=set(state.get('shortlist') or [])
+    if not shortlist:return
+    saved=state.setdefault('shortlisted_products',{})
+    for product in state.get('discovery',[]):
+        if product.get('id') in shortlist:saved.setdefault(product['id'],product)
+def public_room_state(state):
+    result={key:value for key,value in state.items() if key!='commands' and (key!='intent_activity' or os.getenv('SHOPSIDE_BUNDLE_TRACE','').lower()=='true')}
+    if result.get('smart_bundle') and os.getenv('SHOPSIDE_BUNDLE_TRACE','').lower()!='true':
+        result['smart_bundle']={key:value for key,value in result['smart_bundle'].items() if key!='agent_activity'}
+    return result
 def save(r,s,commit=True):
     db.execute('UPDATE rooms SET state=? WHERE id=?',(json.dumps(s),r))
     if commit: db.commit(); notify(r)
@@ -124,19 +146,14 @@ def create(body:Entry,response:Response,request:Request):
     with lock:
         r=secrets.token_urlsafe(18); invite=secrets.token_urlsafe(32)
         s=dict(invite=invite,cart=[],external_cart=[],comparison=[],budget=None,preferences={},proposals=[],activity=[],checkout=None,id=r,title=body.title,revision=0,people=[body.name],payer=body.name,focus='0',shortlist=[],reactions={},messages=[],commands=[])
-        if body.relocation_code:
-            if body.mode!='move_in':raise HTTPException(422,'A relocation allocation requires Move-In Studio')
-            row=db.execute('SELECT state FROM relocation_policies WHERE id=?',(body.relocation_code,)).fetchone()
-            if not row:raise HTTPException(404,'Relocation allocation not found')
-            s['relocation']={'policy_id':body.relocation_code,'policy':json.loads(row[0])}
         s['mode']=body.mode
         if body.mode=='move_in':s['focus']='11'
         if body.mode=='move_in':
             initial_budget=explicit_initial_usd_budget(body.initial_request)
-            if initial_budget is None and s.get('relocation'):initial_budget=s['relocation']['policy']['allowance_cents']
             s['move_in']={'mission':Mission(budget_cents=initial_budget).model_dump(mode='json'),'history':([{'actor':body.name,'text':body.initial_request.strip()}] if body.initial_request.strip() else []),'question_count':0,'question':'','items':{},'timeline':[]}
         if body.initial_request.strip() and body.mode=='general':
             s['shopping_journey']={'history':[{'actor':body.name,'text':body.initial_request.strip()}],'status':'draft','question_count':0}
+            s['budget']=explicit_initial_usd_budget(body.initial_request)
         db.execute('INSERT INTO rooms VALUES(?,?,?)',(r,invite,json.dumps(s)))
         member(response,r,body.name,request)
         return dict(room=s,invite=invite)
@@ -150,6 +167,7 @@ def join(invite:str,body:Entry,response:Response,request:Request):
         if len(s['people'])>=4: raise HTTPException(409,'Room is full (maximum four people)')
         if any(name.casefold()==body.name.casefold() for name in s['people']): raise HTTPException(409,'Choose a different name')
         s['people'].append(body.name)
+        if s.get('smart_bundle'):s['smart_bundle']['approvals']={}
         # A new participant has not approved previous decisions.
         s['agreed_product']=None
         for item in s.get('move_in',{}).get('items',{}).values():
@@ -157,43 +175,437 @@ def join(invite:str,body:Entry,response:Response,request:Request):
                 item['status']='proposed'
                 item.pop('committed_at',None)
         s['revision']+=1; save(r,s); member(response,r,body.name,request)
-        return s
+        return public_room_state(s)
 @app.get('/api/rooms/{r}')
 def room(r:str,request:Request):
     with lock:
-        auth(r,request); s=load(r); return {k:v for k,v in s.items() if k!='commands'}
+        auth(r,request); s=load(r); return public_room_state(s)
+@app.post('/api/rooms/{r}/intent')
+async def interpret_shopping_intent(r:str,request:Request):
+    from .shopping_intent import ShoppingIntent
+    with lock:
+        actor=auth(r,request); initial=load(r)
+        if actor!=initial['payer']: raise HTTPException(403,'Only the room creator can interpret the initial request')
+        history=initial.get('shopping_journey',{}).get('history',[])
+        if not history: raise HTTPException(422,'No shopping goal provided')
+        text=history[0].get('text','')
+    try:
+        interpreted=await asyncio.wait_for(interpret_with_adk(text,ShoppingIntent),timeout=45)
+        intent,intent_activity=interpreted if isinstance(interpreted,tuple) else (interpreted,{})
+    except Exception as exc: raise HTTPException(502,'Could not interpret the shopping goal; you can still search manually.') from exc
+    explicit=explicit_initial_usd_budget(text)
+    if explicit is not None: intent.budget_cents=explicit; intent.currency='USD'
+    from .shopping_intent import complete_outfit_intent
+    intent=complete_outfit_intent(intent,text)
+    from .experience_router import route_intent
+    routing=route_intent(intent.model_dump(mode='json'),text)
+    with lock:
+        current=load(r)
+        # Never overwrite a newer interpretation or an existing user-edited mission.
+        if current.get('shopping_intent'): return {'ok':True,'intent':current['shopping_intent']}
+        current['shopping_intent']={**intent.model_dump(mode='json'),**routing}
+        current['style_lock']={'style':intent.style,'palette':intent.preferences.get('color','') if intent.preferences else ''}
+        current['intent_activity']=intent_activity
+        if intent.budget_cents is not None and intent.currency=='USD' and current.get('budget') is None:current['budget']=intent.budget_cents
+        if routing['studio_requested'] and not current.get('move_in'):
+            current['mode']='move_in'
+            mission=Mission(budget_cents=intent.budget_cents,currency=intent.currency or 'USD',priorities=[intent.style] if intent.style else [],must_have=intent.product_requirements,constraints=intent.constraints)
+            current['move_in']={'mission':mission.model_dump(mode='json'),'history':[{'actor':actor,'text':text}],'question_count':1 if intent.follow_up else 0,'question':intent.follow_up,'items':{},'timeline':[]}
+            if intent.follow_up:current['move_in']['history'].append({'actor':'ShopSide','text':intent.follow_up})
+        current['revision']+=1;save(r,current)
+    return {'ok':True,'intent':{**intent.model_dump(mode='json'),**routing}}
+
+@app.post('/api/rooms/{r}/intent/answer')
+async def answer_shopping_intent(r:str,body:IntentAnswer,request:Request):
+    from .shopping_intent import ShoppingIntent, complete_outfit_intent
+    from .experience_router import route_intent
+    with lock:
+        actor=auth(r,request); current=load(r)
+        if body.command_id in current.get('commands',[]): return public_room_state(current)
+        if body.revision!=current['revision']: raise HTTPException(409,'Room changed. Please retry your answer.')
+        previous=current.get('shopping_intent') or {}
+        if not previous.get('follow_up'): raise HTTPException(409,'There is no open shopping question.')
+        history=current.get('shopping_journey',{}).get('history',[])
+        if not history: raise HTTPException(422,'No shopping goal provided')
+        original=history[0].get('text','')
+        question=previous['follow_up']
+    prompt=f'{original}\nShopSide asked: {question}\nShopper answered: {body.text}'
+    try:
+        interpreted=await asyncio.wait_for(interpret_with_adk(prompt,ShoppingIntent),timeout=45)
+        intent,activity=interpreted if isinstance(interpreted,tuple) else (interpreted,{})
+    except Exception as exc:
+        raise HTTPException(502,'Could not update the shopping plan. Your answer is still here; please try again.') from exc
+    explicit=explicit_initial_usd_budget(original)
+    if explicit is not None: intent.budget_cents=explicit; intent.currency='USD'
+    elif previous.get('budget_cents') is not None:
+        intent.budget_cents=previous['budget_cents']; intent.currency=previous.get('currency')
+    if not intent.style: intent.style=previous.get('style','')
+    if not intent.shopping_goal: intent.shopping_goal=previous.get('shopping_goal','')
+    intent=complete_outfit_intent(intent,original,body.text)
+    routing=route_intent(intent.model_dump(mode='json'),prompt)
+    with lock:
+        current=load(r)
+        if body.command_id in current.get('commands',[]): return public_room_state(current)
+        if current['revision']!=body.revision or current.get('shopping_intent')!=previous:
+            raise HTTPException(409,'Room changed. Please retry your answer.')
+        current['shopping_intent']={**intent.model_dump(mode='json'),**routing}
+        current.pop('bundle_options',None)
+        current.pop('smart_bundle',None)
+        current['style_lock']={'style':intent.style,'palette':intent.preferences.get('color','') if intent.preferences else ''}
+        current['intent_activity']=activity
+        current.setdefault('shopping_journey',{}).setdefault('history',[]).append({'actor':actor,'text':body.text})
+        if intent.budget_cents is not None and intent.currency=='USD':current['budget']=intent.budget_cents
+        current['revision']+=1
+        current['commands']=(current.get('commands',[])+[body.command_id])[-200:]
+        save(r,current)
+        return public_room_state(current)
+
+class BundleAction(BaseModel):
+    action: str = Field(pattern='^(select|swap|approve|withdraw|save)$')
+    expected_version: int = Field(ge=0,strict=True)
+    command_id: str = Field(min_length=1,max_length=100)
+    bundle_id: str | None = Field(default=None,max_length=100)
+    slot_id: str | None = Field(default=None,max_length=10)
+    product_id: str | None = Field(default=None,max_length=200)
+    offer_id: str | None = Field(default=None,max_length=100)
+
+class BundleBudget(BaseModel):
+    amount_cents:int=Field(ge=0,le=100000000,strict=True)
+    currency:str=Field(pattern='^[A-Z]{3}$')
+    expected_version:int=Field(default=0,ge=0,strict=True)
+    command_id:str=Field(min_length=1,max_length=100)
+
+class StyleLockUpdate(BaseModel):
+    style:str=Field(default='',max_length=100)
+    palette:str=Field(default='',max_length=100)
+    expected_version:int=Field(ge=0,strict=True)
+    command_id:str=Field(min_length=8,max_length=100)
+
+@app.post('/api/rooms/{r}/bundle/style-lock')
+def update_style_lock(r:str,body:StyleLockUpdate,request:Request):
+    with lock:
+        auth(r,request);state=load(r);bundle=state.get('smart_bundle') or {}
+        if body.command_id in state.get('commands',[]):return public_room_state(state)
+        if body.expected_version!=bundle.get('version',0):raise HTTPException(409,'Bundle changed; refresh and retry')
+        state['style_lock']={'style':body.style.strip(),'palette':body.palette.strip()}
+        if bundle.get('selected'):
+            bundle['version']+=1;bundle['approvals']={}
+            bundle['selected']['version']=bundle['version']
+            bundle['selected']['preferences']=[x for x in state['style_lock'].values() if x]
+        state.setdefault('commands',[]).append(body.command_id);state['revision']+=1;save(r,state)
+        return public_room_state(state)
+class BundleSearchRequest(BaseModel):
+    command_id:str|None=Field(default=None,min_length=1,max_length=100)
+
+active_bundle_runs=set()
+@app.post('/api/rooms/{r}/bundle/budget')
+def bundle_budget(r:str,body:BundleBudget,request:Request):
+    with lock:
+        state=payer(r,request)
+        intent=state.get('shopping_intent')
+        if not intent or not intent.get('bundle_requested'):raise HTTPException(409,'No bundle shopping goal')
+        bundle=state.setdefault('smart_bundle',{'version':0,'commands':[]})
+        if body.command_id in bundle.get('commands',[]):return {'ok':True}
+        if body.expected_version!=bundle.get('version',0):raise HTTPException(409,'Bundle changed; review it and try again')
+        intent['budget_cents']=body.amount_cents;intent['currency']=body.currency
+        if body.currency=='USD':state['budget']=body.amount_cents
+        if state.get('move_in'):
+            state['move_in']['mission']['budget_cents']=body.amount_cents;state['move_in']['mission']['currency']=body.currency
+        state.pop('bundle_options',None);invalidate_smart_bundle(state)
+        bundle['commands']=(bundle.get('commands',[])+[body.command_id])[-200:]
+        state['revision']+=1;save(r,state)
+    return {'ok':True}
+
+class PlanBudget(BaseModel):
+    amount_cents:int=Field(ge=0,le=100000000,strict=True)
+    currency:str=Field(pattern='^[A-Z]{3}$')
+    revision:int=Field(ge=0,strict=True)
+    command_id:str=Field(min_length=1,max_length=100)
+
+@app.post('/api/rooms/{r}/plan/budget')
+def update_plan_budget(r:str,body:PlanBudget,request:Request):
+    with lock:
+        actor=auth(r,request);state=load(r)
+        if actor!=state['payer']:raise HTTPException(403,'Only the room creator can edit the budget')
+        if body.command_id in state.get('commands',[]):return public_room_state(state)
+        if body.revision!=state['revision']:raise HTTPException(409,'Room changed; review the budget and try again')
+        state['budget']=body.amount_cents if body.currency=='USD' else None
+        if state.get('shopping_intent'):
+            state['shopping_intent']['budget_cents']=body.amount_cents
+            state['shopping_intent']['currency']=body.currency
+        if state.get('shopping_journey',{}).get('intent'):
+            state['shopping_journey']['intent']['budget']=body.amount_cents/100
+            state['shopping_journey']['intent']['currency']=body.currency
+        if state.get('move_in'):
+            state['move_in']['mission']['budget_cents']=body.amount_cents
+            state['move_in']['mission']['currency']=body.currency
+        state.pop('bundle_options',None)
+        invalidate_smart_bundle(state)
+        consent=state.get('seller_offers') or {}
+        if consent.get('enabled'):
+            previous_key=consent.get('demand_key')
+            consent.update(demand_key=secrets.token_urlsafe(12),expires_at=int(time.time())+3600,status='waiting',match_count=0)
+            state.pop('seller_agent',None)
+            for offer in state.get('flash_offers',[]):
+                if offer.get('status') in ('OFFER_PUBLISHED','COUNTERED'):offer['status']='CANCELLED'
+            for row in db.execute('SELECT state FROM merchant_opportunities WHERE room_id=?',(r,)).fetchall():
+                opportunity=merchant_service.read(row)
+                if opportunity.get('demand_key')==previous_key and opportunity['status'] not in merchant_service.TERMINAL:
+                    opportunity['status']='CANCELLED';merchant_service.audit(opportunity,'budget_changed',actor);merchant_service.save_op(db,opportunity)
+        state.setdefault('commands',[]).append(body.command_id)
+        state['revision']+=1;save(r,state)
+        return public_room_state(state)
+
+@app.post('/api/rooms/{r}/bundle/search')
+async def search_bundle(r:str,request:Request,body:BundleSearchRequest=BundleSearchRequest()):
+    with lock:
+        auth(r,request); state=load(r); intent=state.get('shopping_intent') or {}
+        existing=state.get('smart_bundle') or {}
+        if body.command_id and existing.get('search_command_id')==body.command_id:
+            return {'count':len(existing.get('options',[])),'status':'running' if existing.get('progress') else 'completed'}
+        requirements=intent.get('product_requirements') or []
+        if not intent.get('bundle_requested',len(requirements)>1) or len(requirements)<2 or len(requirements)>4:raise HTTPException(422,'A bundle needs between two and four product types')
+        if any(not isinstance(term,str) or not term.strip() for term in requirements) or len({term.strip().casefold() for term in requirements})!=len(requirements):raise HTTPException(422,'Choose distinct product types for the bundle')
+        mission=state.get('move_in',{}).get('mission',{})
+        budget=intent.get('budget_cents');currency=intent.get('currency')
+        if mission.get('budget_cents') is not None:budget=mission['budget_cents'];currency=mission['currency']
+        elif state.get('budget') is not None:budget=state['budget'];currency='USD'
+        budget_snapshot=(state.get('budget'),mission.get('budget_cents'),mission.get('currency'))
+        if budget is None or not currency:raise HTTPException(422,'Set a total budget before searching for a bundle')
+        prior_activity=state.get('intent_activity') or {}
+        remaining_model_calls=6-(prior_activity.get('model_calls') or 0)
+        if remaining_model_calls<2:raise HTTPException(409,'Model call limit reached for this goal')
+        if r in active_bundle_runs:raise HTTPException(409,'A bundle search is already running')
+        search_id=secrets.token_urlsafe(12)
+        current=state.get('smart_bundle') or {}
+        state['smart_bundle']={**current,'search_id':search_id,'search_command_id':body.command_id,'progress':{'phase':'finding','completed':[],'requirements':requirements},'error':None}
+        state['revision']+=1;save(r,state)
+        active_bundle_runs.add(r)
+    async def progress(phase,slot,activity):
+        with lock:
+            current=load(r);bundle=current.get('smart_bundle') or {}
+            if bundle.get('search_id')==search_id and bundle.get('progress'):
+                bundle['progress']['phase']=phase
+                if slot is not None and requirements[slot] not in bundle['progress']['completed']:bundle['progress']['completed'].append(requirements[slot])
+                bundle['agent_activity']={'status':'running','tools':list(activity)}
+                current['revision']+=1;save(r,current)
+    try:
+        result=await asyncio.wait_for(run_bundle_agent(intent,budget,currency,search_products,progress,remaining_model_calls),timeout=45)
+        result['activity']['model_calls']+=(prior_activity.get('model_calls') or 0)
+        for name,value in prior_activity.get('usage',{}).items():
+            if value is not None:result['activity'].setdefault('usage',{})[name]=(result['activity'].get('usage',{}).get(name) or 0)+value
+        slots=result['slots'];options=result['options'];one_seller_available=result['one_seller_available'];batches=result['batches']
+    except asyncio.CancelledError:
+        with lock:
+            current=load(r);bundle=current.get('smart_bundle') or {}
+            if bundle.get('search_id')==search_id:
+                bundle['progress']=None;bundle['search_id']=None;bundle['search_command_id']=None;bundle['error']='Bundle search was interrupted. Try again.';current['revision']+=1;save(r,current)
+        raise
+    except Exception as exc:
+        with lock:
+            current=load(r);bundle=current.get('smart_bundle') or {}
+            if bundle.get('search_id')==search_id:
+                bundle['progress']=None;bundle['search_id']=None;bundle['search_command_id']=None;bundle['error']='Could not complete the bundle search. Try again.'
+                bundle['agent_activity']={**bundle.get('agent_activity',{}),'status':'error'};current['revision']+=1;save(r,current)
+        raise HTTPException(502,'Bundle search is unavailable; try again') from exc
+    finally:
+        with lock:active_bundle_runs.discard(r)
+    with lock:
+        state=load(r);current_mission=state.get('move_in',{}).get('mission',{});bundle=state.get('smart_bundle') or {}
+        if bundle.get('search_id')!=search_id or state.get('shopping_intent')!=intent or (state.get('budget'),current_mission.get('budget_cents'),current_mission.get('currency'))!=budget_snapshot:raise HTTPException(409,'The shopping goal or budget changed; search again')
+        products={p['id']:p for p in state.get('discovery',[])}
+        allowed={p['id'] for slot in slots for p in slot['products']}
+        for batch in batches:
+            for product in batch:
+                if product['id'] in allowed:products[product['id']]=product
+        state['discovery']=list(products.values())
+        state['bundle_options']=options
+        result['activity']['request_id']=search_id
+        state['smart_bundle']={'version':bundle.get('version',0)+1,'slots':slots,'options':options,'one_seller_available':one_seller_available,'selected':None,'approvals':{},'saved':bundle.get('saved'), 'commands':bundle.get('commands',[]),'search_command_id':body.command_id,'progress':None,'error':None,'agent_activity':result['activity'],'currency':currency,'budget_cents':budget,'searched_budget_cents':budget,'goal':intent.get('shopping_goal') or ''}
+        state['revision']+=1;save(r,state)
+    return {'count':len(options)}
+
+class AlternativeSearchRequest(BaseModel):
+    expected_version:int=Field(ge=0,strict=True)
+    command_id:str=Field(min_length=1,max_length=100)
+
+@app.get('/api/rooms/{r}/bundle/alternatives/{slot_id}')
+def bundle_alternatives(r:str,slot_id:str,request:Request):
+    with lock:
+        auth(r,request);state=load(r);bundle=state.get('smart_bundle') or {};selected=bundle.get('selected')
+        if not selected:raise HTTPException(409,'Choose a bundle first')
+        slot=next((x for x in bundle.get('slots',[]) if x['id']==slot_id),None)
+        current=next((x for x in selected['items'] if x['slot_id']==slot_id),None)
+        if not slot or not current:raise HTTPException(404,'Bundle item not found')
+        return {'slot_id':slot_id,'version':bundle['version'],'alternatives':[{'product':p,'offer':o,'new_total_cents':selected['subtotal_cents']-current['offer']['price_cents']+o['price_cents']} for p in slot['products'] for o in p['offers'] if not any(x['product']['id']==p['id'] and x['slot_id']!=slot_id for x in selected['items'])]}
+
+@app.post('/api/rooms/{r}/bundle/alternatives/{slot_id}/similar')
+async def similar_bundle_swaps(r:str,slot_id:str,body:AlternativeSearchRequest,request:Request):
+    from .smart_bundle import normalized_candidates,match_score
+    with lock:
+        auth(r,request);state=load(r);bundle=state.get('smart_bundle') or {};selected=bundle.get('selected')
+        if not selected or body.expected_version!=bundle.get('version'):raise HTTPException(409,'Bundle changed; review it and try again')
+        slot=next((x for x in bundle.get('slots',[]) if x['id']==slot_id),None)
+        current=next((x for x in selected['items'] if x['slot_id']==slot_id),None)
+        if not slot or not current:raise HTTPException(404,'Bundle item not found')
+        intent=state.get('shopping_intent') or {};currency=bundle['currency']
+        max_cents=bundle['budget_cents']-(selected['subtotal_cents']-current['offer']['price_cents'])
+        if max_cents<0:raise HTTPException(409,'No budget remains for a swap')
+    try:
+        raw=await asyncio.wait_for(asyncio.to_thread(similar_products,current['product']['id'].removeprefix('channel3:'),max_cents/100),timeout=20)
+    except Exception as exc:raise HTTPException(502,'Similar products are unavailable; try again later') from exc
+    valid=normalized_candidates([slot['requirement']],[raw],currency,intent.get('hard_constraints'))[0]['products']
+    preferences=[str(x) for x in (state.get('style_lock') or {}).values() if isinstance(x,str)]
+    candidates=[]
+    for product in valid:
+        if product['id']==current['product']['id']:continue
+        for offer in product['offers']:
+            if offer['price_cents']<=max_cents:
+                candidates.append((match_score(slot['requirement'],product,preferences),offer['price_cents'],product,offer))
+    candidates=sorted(candidates,key=lambda x:(-x[0],x[1],x[2]['id']))[:3]
+    with lock:
+        state=load(r);bundle=state.get('smart_bundle') or {}
+        if bundle.get('version')!=body.expected_version:raise HTTPException(409,'Bundle changed while finding swaps')
+        slot=next(x for x in bundle['slots'] if x['id']==slot_id)
+        existing={p['id']:p for p in slot['products']}
+        for _,_,product,_ in candidates:existing[product['id']]=product
+        slot['products']=list(existing.values())
+        discovery={p['id']:p for p in state.get('discovery',[])}
+        for item in raw:
+            if item['id'] in existing:discovery[item['id']]=item
+        state['discovery']=list(discovery.values());state['revision']+=1;save(r,state)
+    return {'count':len(candidates),'slot_id':slot_id,'version':body.expected_version,'alternatives':[{'product':p,'offer':o,
+        'new_total_cents':selected['subtotal_cents']-current['offer']['price_cents']+o['price_cents'],
+        'price_difference_cents':o['price_cents']-current['offer']['price_cents'],
+        'style_match_score':score,'reason':'Same requested category; listed offer and bundle budget verified.'}
+        for score,_,p,o in candidates]}
+
+@app.post('/api/rooms/{r}/bundle/alternatives/{slot_id}/search')
+async def find_bundle_alternatives(r:str,slot_id:str,body:AlternativeSearchRequest,request:Request):
+    with lock:
+        auth(r,request);state=load(r);bundle=state.get('smart_bundle') or {};selected=bundle.get('selected')
+        if body.command_id in bundle.get('commands',[]):return {'ok':True}
+        if not selected or body.expected_version!=bundle.get('version'):raise HTTPException(409,'Bundle changed; review it and try again')
+        slot=next((s for s in bundle.get('slots',[]) if s['id']==slot_id),None)
+        if not slot:raise HTTPException(404,'Bundle item not found')
+        if r in active_bundle_runs:raise HTTPException(409,'A bundle search is already running')
+        trace=bundle.get('agent_activity') or {};remaining_models=6-(trace.get('model_calls') or 0);remaining_http=10-(trace.get('channel3_http_calls') or 0)
+        if remaining_models<2 or remaining_http<1:raise HTTPException(409,'Search limit reached; start a new bundle search to refresh candidates')
+        intent=state.get('shopping_intent') or {};currency=bundle['currency'];active_bundle_runs.add(r)
+    try:
+        found=await asyncio.wait_for(run_alternative_agent(slot['requirement'],intent,currency,search_products,remaining_models,remaining_http),timeout=45)
+    except Exception as exc:raise HTTPException(502,'Alternative search is unavailable; try again') from exc
+    finally:
+        with lock:active_bundle_runs.discard(r)
+    with lock:
+        state=load(r);bundle=state.get('smart_bundle') or {}
+        if bundle.get('version')!=body.expected_version or state.get('shopping_intent')!=intent:raise HTTPException(409,'Bundle changed while searching; try again')
+        slot=next(s for s in bundle['slots'] if s['id']==slot_id)
+        selected_id=next(item['product']['id'] for item in bundle['selected']['items'] if item['slot_id']==slot_id)
+        existing={p['id']:p for p in slot['products']};combined=[]
+        if selected_id in existing:combined.append(existing[selected_id])
+        for product in found['products']+slot['products']:
+            if not any(p['id']==product['id'] for p in combined):combined.append(product)
+        slot['products']=combined[:6]
+        for product in slot['products']:
+            if product['id'] in found['scores']:product['alternative_fit_score']=found['scores'][product['id']]
+        allowed={p['id'] for p in slot['products']};discovery={p['id']:p for p in state.get('discovery',[])}
+        for product in found['raw']:
+            if product['id'] in allowed:discovery[product['id']]=product
+        state['discovery']=list(discovery.values());bundle['commands']=(bundle.get('commands',[])+[body.command_id])[-200:]
+        trace=bundle.setdefault('agent_activity',{});trace['model_calls']=(trace.get('model_calls') or 0)+found['activity']['model_calls'];trace['channel3_http_calls']=(trace.get('channel3_http_calls') or 0)+found['activity']['channel3_http_calls'];trace.setdefault('tools',[]).extend(found['activity']['tools'])
+        for name,value in found['activity'].get('usage',{}).items():
+            if value is not None:trace.setdefault('usage',{})[name]=(trace.get('usage',{}).get(name) or 0)+value
+        state['revision']+=1;save(r,state)
+    return {'ok':True}
+
+@app.post('/api/rooms/{r}/bundle/action')
+def bundle_action(r:str,body:BundleAction,request:Request):
+    from .smart_bundle import item_for,make_bundle
+    with lock:
+        actor=auth(r,request);state=load(r);bundle=state.get('smart_bundle') or {};commands=bundle.get('commands',[])
+        if body.command_id in commands:return {'ok':True,'version':bundle.get('version',0)}
+        if bundle.get('progress'):raise HTTPException(409,'Bundle search is in progress')
+        if body.expected_version!=bundle.get('version',0):raise HTTPException(409,'Bundle changed; review it and try again')
+        selected=bundle.get('selected')
+        if body.action=='select':
+            selected=next((option for option in bundle.get('options',[]) if option['id']==body.bundle_id),None)
+            if not selected:raise HTTPException(404,'Bundle not found; search again')
+            selected=dict(selected);bundle['version']+=1;selected['version']=bundle['version'];bundle['selected']=selected;bundle['approvals']={}
+        elif body.action=='swap':
+            if not selected:raise HTTPException(409,'Choose a bundle first')
+            replacement=item_for(bundle.get('slots',[]),body.slot_id,body.product_id,body.offer_id)
+            if not replacement or not any(x['slot_id']==body.slot_id for x in selected['items']):raise HTTPException(422,'Choose an available alternative')
+            if any(x['product']['id']==replacement['product']['id'] and x['slot_id']!=body.slot_id for x in selected['items']):raise HTTPException(422,'A product cannot fill two bundle slots')
+            items=[replacement if x['slot_id']==body.slot_id else x for x in selected['items']]
+            updated=make_bundle(items,'custom',bundle['budget_cents'],bundle['currency'],bundle['goal'],
+                                [x for x in (state.get('style_lock') or {}).values() if isinstance(x,str) and x] or selected.get('preferences',[]))
+            if updated['remaining_cents']<0:raise HTTPException(422,f"Over budget by {bundle['currency']} {-updated['remaining_cents']/100:.2f}; choose a cheaper alternative")
+            bundle['version']+=1;updated['version']=bundle['version'];bundle['selected']=updated;bundle['approvals']={}
+        elif body.action in ('approve','withdraw'):
+            if not selected:raise HTTPException(409,'Choose a bundle first')
+            if body.action=='approve':bundle.setdefault('approvals',{})[actor]=bundle['version']
+            else:bundle.setdefault('approvals',{}).pop(actor,None)
+        elif body.action=='save':
+            if not selected:raise HTTPException(409,'Choose a bundle first')
+            bundle['saved']=json.loads(json.dumps(selected))
+        commands.append(body.command_id);bundle['commands']=commands[-200:];state['smart_bundle']=bundle
+        state['revision']+=1;save(r,state)
+        return {'ok':True,'version':bundle['version']}
+
+@app.post('/api/rooms/{r}/home-plan')
+def enable_home_plan(r:str,request:Request):
+    with lock:
+        auth(r,request); state=load(r)
+        if not state.get('move_in'):
+            history=state.get('shopping_journey',{}).get('history',[])
+            state['move_in']={'mission':Mission(budget_cents=state.get('budget')).model_dump(mode='json'),'history':history,'question_count':0,'question':'','items':{},'timeline':[]}
+            state['mode']='move_in';state['revision']+=1;save(r,state)
+    return {'ok':True}
+
+def invalidate_smart_bundle(state):
+    bundle=state.get('smart_bundle')
+    if bundle:
+        bundle.update(version=bundle.get('version',0)+1,options=[],selected=None,approvals={},progress=None,search_id=None,search_command_id=None,searched_budget_cents=None)
+
 @app.post('/api/rooms/{r}/commands')
 def command(r:str,body:Command,request:Request):
     with lock:
         actor=auth(r,request); s=load(r)
         if body.command_id in s['commands']: return {'ok':True}
         if body.revision!=s['revision']: raise HTTPException(409,'Room changed; refresh and retry')
-        if body.kind in ['focus','shortlist','reaction'] and body.value not in [p['id'] for p in catalog]+[p['id'] for p in s.get('discovery',[])]: raise HTTPException(422,'Unknown product')
+        known_ids=[p['id'] for p in room_products(s)]
+        if body.kind in ['focus','shortlist','reaction'] and body.value not in known_ids and not (body.kind=='shortlist' and body.value in s.get('shortlist',[])): raise HTTPException(422,'Unknown product')
         if body.kind=='focus': s['focus']=body.value; s['spotlight_by']=actor
         elif body.kind=='shortlist':
-            if body.value in s['shortlist']: s['shortlist'].remove(body.value)
-            else: s['shortlist'].append(body.value)
+            if body.value in s['shortlist']:
+                s['shortlist'].remove(body.value)
+                s.get('shortlisted_products',{}).pop(body.value,None)
+            else:
+                product=next(p for p in room_products(s) if p['id']==body.value)
+                s['shortlist'].append(body.value)
+                s.setdefault('shortlisted_products',{})[body.value]=product
         elif body.kind=='reaction':
             people=s['reactions'].setdefault(body.value,[])
             if actor in people: people.remove(actor)
             else: people.append(actor)
         elif body.kind=='compare':
             ids=body.value.split(',')
-            if not 2<=len(ids)<=3 or len(set(ids))!=len(ids) or any(i not in [p['id'] for p in catalog]+[p['id'] for p in s.get('discovery',[])] for i in ids): raise HTTPException(422,'Select two different products')
+            if not 2<=len(ids)<=3 or len(set(ids))!=len(ids) or any(i not in [p['id'] for p in room_products(s)] for i in ids): raise HTTPException(422,'Select two different products')
             s['comparison']=ids
         elif body.kind=='placement_upsert':
-            if s.get('mode')!='move_in':raise HTTPException(409,'Room preview is available in Move-In Studio')
             try: placement=RoomPlacement.model_validate_json(body.value)
             except ValueError:raise HTTPException(422,'Invalid placement')
             placements=s.setdefault('room_placements',[])
             old=next((p for p in placements if p['product_id']==placement.product_id),None)
-            product=next((p for p in catalog+s.get('discovery',[]) if p['id']==placement.product_id),None)
+            product=next((p for p in room_products(s) if p['id']==placement.product_id),None)
             if not product and not old:raise HTTPException(422,'Select a product in this room')
+            from .experience_router import spatial_eligible
+            if product and not spatial_eligible(product):raise HTTPException(422,'Only spatial products can be placed in Move-in Studio')
             if not old and len(placements)>=20:raise HTTPException(422,'This room can hold up to 20 product markers')
             updated={'product_id':placement.product_id,'name':product['name'] if product else old['name'],'x':placement.x,'z':placement.z,'updated_by':actor}
             s['room_placements']=[p for p in placements if p['product_id']!=placement.product_id]+[updated]
         elif body.kind=='marker_reaction':
-            if s.get('mode')!='move_in':raise HTTPException(409,'Room reactions are available in Move-In Studio')
             try: reaction=MarkerReaction.model_validate_json(body.value)
             except ValueError:raise HTTPException(422,'Invalid marker reaction')
             if not any(p['product_id']==reaction.product_id for p in s.get('room_placements',[])):raise HTTPException(422,'Place the product in the room first')
@@ -201,26 +613,28 @@ def command(r:str,body:Command,request:Request):
             if reaction.reaction=='clear' or reactions.get(actor)==reaction.reaction:reactions.pop(actor,None)
             else:reactions[actor]=reaction.reaction
         elif body.kind=='placement_remove':
-            if s.get('mode')!='move_in':raise HTTPException(409,'Room preview is available in Move-In Studio')
             s['room_placements']=[p for p in s.get('room_placements',[]) if p['product_id']!=body.value]
             s.get('marker_reactions',{}).pop(body.value,None)
         elif body.kind=='title':
             if not body.value.strip() or len(body.value)>100: raise HTTPException(422,'Room title must be 1–100 characters')
             s['title']=body.value.strip()
         elif body.kind=='agreement':
-            if body.value not in [p['id'] for p in catalog]+[p['id'] for p in s.get('discovery',[])]: raise HTTPException(422,'Unknown product')
+            if body.value not in [p['id'] for p in room_products(s)]: raise HTTPException(422,'Unknown product')
             votes=s.setdefault('agreement_votes',{})
             votes[actor]=body.value
             s['agreed_product']=body.value if len(s['people'])>=2 and all(votes.get(person)==body.value for person in s['people']) else None
-        elif body.kind=='board_preset':
-            if body.value not in ['Browse','Compare','Decide']: raise HTTPException(422,'Unknown preset')
-            s['board_preset']=body.value
         elif body.kind=='budget':
             if actor!=s['payer']: raise HTTPException(403,'Only payer can confirm budget')
             try: amount=int(body.value)
             except ValueError: raise HTTPException(422,'Budget must be integer cents')
             if amount<0: raise HTTPException(422,'Invalid budget')
             s['budget']=amount
+            if s.get('shopping_intent'):
+                s['shopping_intent']['budget_cents']=amount;s['shopping_intent']['currency']='USD'
+            if s.get('move_in'):
+                s['move_in']['mission']['budget_cents']=amount;s['move_in']['mission']['currency']='USD'
+            s.pop('bundle_options',None)
+            invalidate_smart_bundle(s)
         elif body.kind=='preference': s.setdefault('preferences',{})[actor]=body.value
         elif body.kind in ['external_cart_add','external_cart_remove']:
             if s.get('checkout'): raise HTTPException(409,'Checkout freezes cart edits')
@@ -268,13 +682,18 @@ async def live(ws:WebSocket,r:str):
     loop=asyncio.get_running_loop(); changed=asyncio.Event(); entry=(loop,changed)
     with lock: subscribers.setdefault(r,set()).add(entry)
     try:
+        last_revision=None
         while True:
-            changed.clear()
             with lock: state=load(r)
-            await ws.send_json({k:v for k,v in state.items() if k!='commands'})
+            if state['revision']!=last_revision:
+                await ws.send_json(public_room_state(state))
+                last_revision=state['revision']
+            changed.clear()
             waiter=asyncio.create_task(changed.wait())
             receiver=asyncio.create_task(ws.receive())
-            done,pending=await asyncio.wait([waiter,receiver],return_when=asyncio.FIRST_COMPLETED)
+            # A local event is fast; polling also catches commits made by another
+            # Cloud Run instance, whose in-memory subscriber list is separate.
+            done,pending=await asyncio.wait([waiter,receiver],timeout=1.5,return_when=asyncio.FIRST_COMPLETED)
             for task in pending: task.cancel()
             await asyncio.gather(*pending,return_exceptions=True)
             if receiver in done and receiver.result()['type']=='websocket.disconnect': break
@@ -324,7 +743,7 @@ async def agent(r:str,body:Ask,request:Request):
             found=search_products(query,max_price)
             if time.monotonic()>deadline: return []
             with lock:
-                s=load(r); s['discovery']=found; s['revision']+=1; save(r,s)
+                s=load(r); preserve_shortlisted_products(s); s['discovery']=found; s['revision']+=1; save(r,s)
             return found
         def get_merchant_offer(product_id:str)->dict:
             """Return an eligible demo merchant offer; external discovery is retailer-only."""
@@ -403,7 +822,113 @@ async def agent(r:str,body:Ask,request:Request):
 import httpx
 PAYPAL='https://api-m.sandbox.paypal.com'
 db.execute('CREATE TABLE IF NOT EXISTS payments(id TEXT PRIMARY KEY, room TEXT, state TEXT)')
+db.execute('CREATE TABLE IF NOT EXISTS merchant_orders(id TEXT PRIMARY KEY, merchant_id TEXT NOT NULL, state TEXT NOT NULL)')
+db.execute('CREATE TABLE IF NOT EXISTS paypal_webhook_events(id TEXT PRIMARY KEY, event_type TEXT NOT NULL, received_at TEXT NOT NULL)')
+db.execute('CREATE TABLE IF NOT EXISTS paypal_webhook_payloads(id TEXT PRIMARY KEY, state TEXT NOT NULL)')
+db.execute('CREATE TABLE IF NOT EXISTS channel3_webhook_events(id TEXT PRIMARY KEY, event_type TEXT NOT NULL, received_at TEXT NOT NULL, state TEXT NOT NULL)')
+db.execute('CREATE TABLE IF NOT EXISTS channel3_watches(id TEXT PRIMARY KEY, room TEXT NOT NULL, participant TEXT NOT NULL, product_id TEXT NOT NULL, subscription_id TEXT NOT NULL, scope TEXT NOT NULL, threshold_cents INTEGER NOT NULL, status TEXT NOT NULL, state TEXT NOT NULL)')
+db.execute('CREATE TABLE IF NOT EXISTS settlement_jobs(id TEXT PRIMARY KEY, payment_id TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL)')
 db.commit()
+
+class WatchRequest(BaseModel):
+    product_id:str=Field(min_length=1,max_length=200)
+    threshold_cents:int=Field(gt=0,le=100000000)
+    currency:str=Field(default='USD',pattern='^[A-Z]{3}$')
+    retailer_domain:str|None=Field(default=None,max_length=253)
+    selected_options:dict[str,str]=Field(default_factory=dict)
+
+def offers_in_watch_currency(offers,scope):
+    currency=scope.get('currency','USD')
+    return [offer for offer in offers if offer.get('currency')==currency]
+
+@app.get('/api/rooms/{r}/price-watches')
+def list_price_watches(r:str,request:Request):
+    with lock:
+        participant=auth(r,request)
+        return [json.loads(row[0]) for row in db.execute('SELECT state FROM channel3_watches WHERE room=? AND participant=?',(r,participant)).fetchall()]
+
+@app.post('/api/rooms/{r}/price-watches')
+def create_price_watch(r:str,body:WatchRequest,request:Request):
+    from .discovery import request as channel3_request
+    if not body.product_id.startswith('channel3:'):raise HTTPException(422,'Price Watch requires a live Channel3 product')
+    selected=room_channel3_product(r,body.product_id[9:],request)
+    matching_offers=[offer for offer in selected.get('offers',[]) if offer.get('currency')==body.currency and (not body.retailer_domain or offer.get('retailer','').casefold()==body.retailer_domain.casefold())]
+    if not matching_offers:raise HTTPException(422,f'No saved retailer offer matches {body.currency} for this listing')
+    if body.selected_options:
+        enrich_selected_listing(selected,product_details(body.product_id[9:],body.selected_options))
+    if body.retailer_domain and not re.fullmatch(r'(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,63}',body.retailer_domain):raise HTTPException(422,'Invalid retailer domain')
+    with lock:
+        participant=auth(r,request)
+        selection=[{'name':name,'label':label} for name,label in sorted(body.selected_options.items())]
+        scope=json.dumps({'product_id':body.product_id[9:],'currency':body.currency,'domains':[body.retailer_domain] if body.retailer_domain else [],'selection':selection},sort_keys=True)
+        existing=db.execute('SELECT subscription_id FROM channel3_watches WHERE scope=? AND status IN (?,?) LIMIT 1',(scope,'active','paused')).fetchone()
+        if existing:subscription_id=existing[0]
+        else:
+            payload={'product_id':body.product_id[9:],'events':['offer.price.changed','offer.availability.changed','offer.created','offer.deleted']}
+            if body.retailer_domain:payload['domains']=[body.retailer_domain]
+            if selection:payload['selection']=selection
+            result=channel3_request('/v1/product-subscriptions',payload)
+            subscription_id=result.get('subscription_id')
+            if not subscription_id:raise HTTPException(502,'Channel3 did not confirm a product subscription')
+        watch={'id':secrets.token_urlsafe(16),'room':r,'participant':participant,'product_id':body.product_id,'subscription_id':subscription_id,'scope':scope,'threshold_cents':body.threshold_cents,'currency':body.currency,'status':'active','created_at':datetime.now(timezone.utc).isoformat()}
+        db.execute('INSERT INTO channel3_watches VALUES(?,?,?,?,?,?,?,?,?)',(watch['id'],r,participant,body.product_id,subscription_id,scope,body.threshold_cents,'active',json.dumps(watch)))
+        db.commit()
+        return watch
+
+@app.post('/api/rooms/{r}/price-watches/{watch_id}/{action}')
+def update_price_watch(r:str,watch_id:str,action:str,request:Request):
+    if action not in ('pause','resume','cancel'):raise HTTPException(404)
+    with lock:
+        participant=auth(r,request)
+        row=db.execute('SELECT state FROM channel3_watches WHERE id=? AND room=? AND participant=?',(watch_id,r,participant)).fetchone()
+        if not row:raise HTTPException(404,'Price watch not found')
+        watch=json.loads(row[0]); watch['status']={'pause':'paused','resume':'active','cancel':'cancelled'}[action]
+        if action=='resume' and json.loads(row[0])['status']=='cancelled':raise HTTPException(409,'Create a new watch after cancellation')
+        if action=='cancel' and json.loads(row[0])['status']!='cancelled':
+            other=db.execute('SELECT id FROM channel3_watches WHERE subscription_id=? AND id<>? AND status IN (?,?) LIMIT 1',
+                (watch['subscription_id'],watch_id,'active','paused')).fetchone()
+            if not other:
+                from .discovery import cancel_subscription
+                cancel_subscription(watch['subscription_id'])
+        db.execute('UPDATE channel3_watches SET status=?,state=? WHERE id=?',(watch['status'],json.dumps(watch),watch_id));db.commit()
+        return watch
+
+@app.post('/api/rooms/{r}/price-watch-alerts/{alert_id}/deal-rescue-draft')
+def draft_from_price_alert(r:str,alert_id:str,request:Request):
+    """Create an explicit request for an owned alternative, never a retailer payment."""
+    with lock:
+        room=payer(r,request)
+        alert=next((item for item in room.get('price_watch_alerts',[]) if item.get('id')==alert_id),None)
+        if not alert:raise HTTPException(404,'Price Watch alert not found')
+        product=next((item for item in room.get('discovery',[]) if item.get('id')==alert['product_id']),None)
+        if not product:product=product_details(alert['product_id'].removeprefix('channel3:'))
+        if not product or product.get('source')!='CHANNEL3_LIVE':raise HTTPException(409,'Current Channel3 product details are required')
+        owned_categories={item.get('category','').lower() for row in db.execute('SELECT state FROM merchants').fetchall()
+            if (merchant_service.read(row).get('active') and merchant_service.read(row).get('opt_in'))
+            for item in merchant_service.product_rows(db,merchant_service.read(row)['id'])
+            if item.get('source')=='SHOPSIDE_SANDBOX' and item.get('active') and item.get('stock_quantity',0)>0}
+        words=set(re.findall(r'[a-z]+',((product.get('name') or '')+' '+(product.get('category') or '')).lower()))
+        words|={word[:-1] for word in words if word.endswith('s')}
+        category=next((value for value in sorted(owned_categories) if value in words),None)
+        if not category:raise HTTPException(409,'No participating ShopSide-owned alternative category is known for this retailer product')
+        scope_row=db.execute('SELECT scope FROM channel3_watches WHERE id=? AND room=?',(alert_id.split(':')[-1],r)).fetchone()
+        scope=json.loads(scope_row[0]) if scope_row else {}
+        room['deal_rescue_draft']={'source':'CHANNEL3_PRICE_WATCH','channel3_product_id':product['id'],
+            'product_name':product['name'],'owned_alternative_category':category,'observed_price_cents':alert.get('price_cents'),
+            'watch_id':alert_id.split(':')[-1],
+            'retailer_domain':(scope.get('domains') or [None])[0],'selection':scope.get('selection',[]),
+            'alert_id':alert_id,'created_at':datetime.now(timezone.utc).isoformat(),
+            'disclosure':'A ShopSide sandbox merchant alternative may be a different product. The real Channel3 item stays with its retailer.'}
+        room['revision']+=1;save(r,room)
+        return room['deal_rescue_draft']
+
+@app.post('/api/rooms/{r}/deal-rescue/draft/clear')
+def clear_deal_rescue_draft(r:str,request:Request):
+    with lock:
+        room=payer(r,request)
+        room.pop('deal_rescue_draft',None)
+        room['revision']+=1;save(r,room)
+        return {'cleared':True}
 payment_busy=set()
 async def paypal(method,path,payload=None,operation=None):
     if os.getenv('PAYPAL_ENV','sandbox')!='sandbox': raise HTTPException(503,'Only sandbox is supported')
@@ -413,21 +938,582 @@ async def paypal(method,path,payload=None,operation=None):
         token.raise_for_status()
         headers={'Authorization':'Bearer '+token.json()['access_token']}
         if operation: headers['PayPal-Request-Id']=operation
-        result=await client.request(method,PAYPAL+path,json=payload,headers=headers); result.raise_for_status(); return result.json()
+        result=await client.request(method,PAYPAL+path,json=payload,headers=headers)
+        result.raise_for_status()
+        # PayPal returns HTTP 204 with no JSON for successful void operations.
+        if result.status_code==204:return {}
+        try:return result.json()
+        except ValueError as exc:raise HTTPException(502,'PayPal returned an invalid response; check payment status before retrying.') from exc
 def payment_save(p,commit=True):
     with lock:
         db.execute('INSERT INTO payments VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET room=excluded.room,state=excluded.state',(p['id'],p['room'],json.dumps(p)))
+        if p.get('merchant_id'):
+            db.execute('UPDATE merchant_orders SET state=? WHERE id=? AND merchant_id=?',(json.dumps(p),p['id'],p['merchant_id']))
         if commit: db.commit()
 def payment_load(id,r):
     row=db.execute('SELECT state FROM payments WHERE id=? AND room=?',(id,r)).fetchone()
     if not row: raise HTTPException(404,'Payment not found')
     return json.loads(row[0])
+
+def claim_payment_settlement(payment):
+    """Cross-instance compare-and-swap before any PayPal capture attempt."""
+    row=db.execute('SELECT state FROM payments WHERE id=? AND room=?',(payment['id'],payment['room'])).fetchone()
+    if not row:raise HTTPException(404,'Payment not found')
+    current=json.loads(row[0])
+    if current['status']=='capture_pending' and current.get('settlement_claimed_at',0)>time.time()-60:
+        raise HTTPException(409,'Settlement is already being reconciled')
+    if current['status'] not in ('authorized','capture_pending'):
+        raise HTTPException(409,'Payment is not authorized for settlement')
+    current.update(payment)
+    current['status']='capture_pending';current['settlement_claimed_at']=time.time()
+    changed=db.execute('UPDATE payments SET state=? WHERE id=? AND room=? AND state=?',
+        (json.dumps(current),payment['id'],payment['room'],row[0]))
+    if changed.rowcount!=1:raise HTTPException(409,'Settlement was claimed by another worker')
+    if current.get('merchant_id'):
+        db.execute('UPDATE merchant_orders SET state=? WHERE id=? AND merchant_id=?',
+            (json.dumps(current),current['id'],current['merchant_id']))
+    db.commit()
+    return current
+
+def schedule_authorized_settlements(r,offer):
+    if not offer or offer.get('status')!='ACCEPTED':return
+    rows=db.execute('SELECT state FROM payments WHERE room=?',(r,)).fetchall()
+    for row in rows:
+        payment=json.loads(row[0])
+        if payment.get('status')!='authorized' or payment.get('authorization_mode')!='PREAUTHORIZED':continue
+        if payment.get('merchant_id')!=offer.get('merchant_id'):continue
+        if payment.get('opportunity_id')!=offer.get('opportunity_id') and payment.get('quote_id')!=offer.get('id'):continue
+        job_id='paypal-settle-'+payment['id']+'-'+offer['id']
+        db.execute('INSERT INTO settlement_jobs VALUES(?,?,?,?) ON CONFLICT(id) DO NOTHING',
+            (job_id,payment['id'],'pending',datetime.now(timezone.utc).isoformat()))
+        db.commit()
+        if merchant_tasks.configured():
+            merchant_tasks.enqueue(job_id,path=f"/api/internal/paypal-settlements/{payment['id']}/process")
+
+class ProvisionalAuthorization(BaseModel):
+    maximum_cents:int=Field(gt=0,le=100000000)
+
+@app.post('/api/rooms/{r}/deal-rescue/{op_id}/provisional-authorization')
+def provisional_authorization(r:str,op_id:str,body:ProvisionalAuthorization,request:Request):
+    """Freeze a single owned merchant and its SKUs before negotiation finishes."""
+    from .payment_authorization import merchant_payee
+    with lock:
+        room=payer(r,request);consent=room.get('seller_offers') or {}
+        if not consent.get('enabled') or not consent.get('merchant_id') or consent.get('payment_mode')!='PREAUTHORIZED':
+            raise HTTPException(409,'Choose one participating merchant for preauthorization')
+        if consent.get('expires_at',0)<=time.time():raise HTTPException(409,'Buyer consent expired')
+        if consent.get('auto_accept_limit_cents')!=body.maximum_cents:
+            raise HTTPException(409,'Save the same maximum as your buyer acceptance limit first')
+        if room.get('checkout'):raise HTTPException(409,'An active checkout already exists')
+        op=merchant_service.scoped_opportunity(db,consent['merchant_id'],op_id)
+        if op['room_id']!=r or op['demand_key']!=consent['demand_key']:
+            raise HTTPException(409,'Merchant opportunity is outside this buyer policy')
+        if op['status'] in ('DECLINED','EXPIRED','CANCELLED','ORDER_COMPLETED'):
+            raise HTTPException(409,'Merchant opportunity has closed')
+        if body.maximum_cents>op['demand']['budget_cents']:
+            raise HTTPException(422,'Maximum exceeds the shared budget')
+        merchant=merchant_service.merchant(db,op['merchant_id'])
+        if not merchant.get('sandbox') or not merchant.get('opt_in') or not merchant.get('active'):
+            raise HTTPException(409,'Merchant is unavailable')
+        merchant_payee(op['merchant_id'])
+        products={p['product_id']:p for p in merchant_service.product_rows(db,op['merchant_id']) if p.get('source')=='SHOPSIDE_SANDBOX'}
+        quantity=int(op.get('quantity',1))
+        items=[]
+        for product_id in op['product_ids']:
+            product=products.get(product_id)
+            if not product or not product.get('active') or product.get('currency')!='USD' or product.get('stock_quantity',0)<quantity:
+                raise HTTPException(409,'Exact merchant item is unavailable')
+            items.append({'product':product_id,'sku':product['sku'],'variant':'standard','quantity':quantity,'price':product['price_cents'],'name':product['title']})
+        reference=sum(item['price']*item['quantity'] for item in items)
+        if reference!=op['reference_total_cents'] or body.maximum_cents>reference:
+            raise HTTPException(409,'Merchant listing or maximum changed')
+        payment=dict(id=secrets.token_urlsafe(20),room=r,payer=room['payer'],merchant_id=op['merchant_id'],merchant_name=merchant['name'],
+            opportunity_id=op_id,quote_id=None,provisional=True,checkout_mode=CheckoutMode.SHOP_SIDE_MERCHANT,
+            items=items,total=body.maximum_cents,reference_total=reference,currency='USD',
+            authorized_amount_cents=body.maximum_cents,
+            policy_version=consent.get('policy_version'),demand_key=consent['demand_key'],
+            shipping_max_cents=0,tax_max_cents=0,linked_watch_id=consent.get('linked_watch_id'),
+            expires=min(time.time()+600,consent['expires_at']),status='quoted',
+            create_id=secrets.token_hex(16),capture_id=secrets.token_hex(16),preauthorization_available=True)
+        try:
+            db.begin()
+            for item in items:
+                cursor=db.execute('UPDATE merchant_inventory SET reserved_quantity=reserved_quantity+? WHERE merchant_id=? AND product_id=? AND stock_quantity-reserved_quantity>=?',
+                    (item['quantity'],op['merchant_id'],item['product'],item['quantity']))
+                if cursor.rowcount!=1:raise HTTPException(409,'Merchant inventory unavailable')
+            payment_save(payment,commit=False)
+            db.execute('INSERT INTO merchant_orders(id,merchant_id,state) VALUES(?,?,?)',(payment['id'],op['merchant_id'],json.dumps(payment)))
+            room['checkout']={'id':payment['id'],'status':'quoted','total':payment['total'],'currency':'USD','merchant_id':op['merchant_id']}
+            room['revision']+=1;save(r,room,commit=False);db.commit();notify(r)
+        except Exception:db.rollback();raise
+        return payment
+
+@app.post('/api/rooms/{r}/payments/{id}/preauthorize/{action}')
+async def preauthorize_payment(r:str,id:str,action:str,request:Request):
+    from .payment_authorization import merchant_payee, same_amount
+    if action not in ('create','authorize','status','void'):raise HTTPException(404)
+    with lock:
+        s=payer(r,request);p=payment_load(id,r)
+        if not p.get('merchant_id') or p.get('checkout_mode')!=CheckoutMode.SHOP_SIDE_MERCHANT:
+            raise HTTPException(409,'Only owned sandbox merchants can use preauthorization')
+        if not s.get('checkout') or s['checkout']['id']!=id:raise HTTPException(409,'Checkout changed')
+        if id in payment_busy:raise HTTPException(409,'Payment operation already in progress')
+        payee=merchant_payee(p['merchant_id'])
+        if action=='create':
+            if p['status'] not in ('quoted','creating','approval') or (p['status']!='approval' and time.time()>p['expires']):raise HTTPException(409,'Fresh merchant quote required')
+            consent=s.get('seller_offers') or {}
+            if not consent.get('enabled') or consent.get('expires_at',0)<=time.time():raise HTTPException(409,'Buyer consent expired')
+            if p['status']=='quoted':
+                p.update(authorization_mode='PREAUTHORIZED',payee=payee,authorized_amount_cents=p['total'],authorization_expires=min(time.time()+86400,consent['expires_at']),authorize_id=secrets.token_hex(16),authorization_capture_id=secrets.token_hex(16),authorization_void_id=secrets.token_hex(16),status='creating')
+                payment_save(p)
+        elif p.get('authorization_mode')!='PREAUTHORIZED':raise HTTPException(409,'Authorization was not selected')
+        if p['status']=='paid':return {'status':'paid','order_id':p.get('provider_id'),'authorization_id':p.get('authorization_id'),'capture_id':p.get('capture')}
+        if p['status']=='capture_pending' and action=='status':
+            return {'status':'capture_pending','order_id':p.get('provider_id'),'authorization_id':p.get('authorization_id')}
+        if action=='authorize':
+            consent=s.get('seller_offers') or {}
+            if not consent.get('enabled') or consent.get('expires_at',0)<=time.time() or (p.get('demand_key') and consent.get('demand_key')!=p['demand_key']) or (p.get('policy_version') and consent.get('policy_version')!=p['policy_version']):
+                raise HTTPException(409,'Buyer policy changed; authorization cannot continue')
+        payment_busy.add(id)
+    amount=f"{p['total']//100}.{p['total']%100:02d}"
+    try:
+        if action=='create' and not p.get('provider_id'):
+            order=await paypal('POST','/v2/checkout/orders',{'intent':'AUTHORIZE','purchase_units':[{'reference_id':id,'payee':{'merchant_id':payee},'amount':{'currency_code':'USD','value':amount}}]},p['create_id'])
+            p['provider_id']=order['id'];p['status']='approval';payment_save(p)
+        elif action=='authorize':
+            if p['status']=='approval':
+                if time.time()>p['authorization_expires']:raise HTTPException(409,'Authorization window expired')
+                p['status']='authorizing';payment_save(p)
+                await paypal('POST',f"/v2/checkout/orders/{p['provider_id']}/authorize",{},p['authorize_id'])
+            elif p['status'] not in ('authorizing','authorized'):raise HTTPException(409,'PayPal buyer approval required')
+        elif action=='void':
+            if p['status']!='authorized':raise HTTPException(409,'Only an authorized payment can be voided')
+            await paypal('POST',f"/v2/payments/authorizations/{p['authorization_id']}/void",{},p['authorization_void_id'])
+            authorization=await paypal('GET',f"/v2/payments/authorizations/{p['authorization_id']}")
+            if authorization.get('status')!='VOIDED':raise HTTPException(503,'PayPal void requires reconciliation')
+            with lock:
+                db.begin()
+                try:
+                    release_merchant_reservations(p)
+                    p['status']='voided';payment_save(p,commit=False)
+                    s=load(r);s['checkout']=None;s['revision']+=1;save(r,s,commit=False);db.commit();notify(r)
+                except Exception:db.rollback();raise
+            return {'status':'voided','order_id':p.get('provider_id'),'authorization_id':p.get('authorization_id')}
+        if action in ('authorize','status') and p.get('provider_id') and p['status']!='voided':
+            order=await paypal('GET',f"/v2/checkout/orders/{p['provider_id']}")
+            unit=order['purchase_units'][0]
+            authorizations=unit.get('payments',{}).get('authorizations',[])
+            if unit.get('payee',{}).get('merchant_id')!=payee or not same_amount(unit.get('amount'),p['total']):
+                raise HTTPException(409,'PayPal merchant or amount mismatch')
+            if authorizations:
+                authorization=authorizations[0]
+                if authorization.get('status')!='CREATED' or not same_amount(authorization.get('amount'),p['total']):
+                    raise HTTPException(409,'PayPal authorization mismatch')
+                p['authorization_id']=authorization['id'];p['status']='authorized'
+                p.setdefault('authorized_at',datetime.now(timezone.utc).isoformat());payment_save(p)
+                ready=next((o for o in s.get('flash_offers',[]) if o.get('status')=='ACCEPTED' and (o.get('id')==p.get('quote_id') or o.get('opportunity_id')==p.get('opportunity_id'))),None)
+                if ready:schedule_authorized_settlements(r,ready)
+        with lock:
+            s=load(r);s['checkout']={**s['checkout'],'status':p['status'],'authorization_mode':'PREAUTHORIZED'}
+            s['revision']+=1;save(r,s)
+        return {'status':p['status'],'order_id':p.get('provider_id'),'authorization_id':p.get('authorization_id'),'expires_at':p.get('authorization_expires')}
+    except (httpx.HTTPError,KeyError,IndexError,TypeError,ValueError) as exc:
+        raise HTTPException(502,'PayPal authorization outcome uncertain; check status before retrying') from exc
+    finally:payment_busy.discard(id)
+
+@app.post('/api/internal/paypal-settlements/{id}/process')
+async def settle_authorized_payment(id:str,request:Request):
+    from .payment_authorization import require_authorized_scope, partial_capture_enabled, same_amount
+    if not merchant_tasks.verify(request):raise HTTPException(403,'Cloud Tasks identity required')
+    with lock:
+        row=db.execute('SELECT room FROM payments WHERE id=?',(id,)).fetchone()
+        if not row:raise HTTPException(404,'Payment not found')
+        r=row[0];p=payment_load(id,r);s=load(r)
+        if p['status']=='paid':return {'status':'paid','capture_id':p.get('capture')}
+        fallback=False
+        if p['status']=='capture_pending':
+            if not p.get('authorization_id'):raise HTTPException(409,'Authorization missing')
+        else:
+            offer=next((o for o in s.get('flash_offers',[]) if (p.get('quote_id') and o.get('id')==p['quote_id']) or (p.get('opportunity_id') and o.get('opportunity_id')==p['opportunity_id'] and o.get('status')=='ACCEPTED')),None)
+            if not offer:raise HTTPException(409,'Merchant offer unavailable')
+            payee=require_authorized_scope(p,s,offer,s.get('seller_offers') or {})
+            if payee!=p['payee']:raise HTTPException(409,'Merchant payee changed')
+            opportunity=merchant_service.scoped_opportunity(db,p['merchant_id'],offer['opportunity_id'])
+            if opportunity.get('demand_key')!=(s.get('seller_offers') or {}).get('demand_key'):
+                raise HTTPException(409,'Buyer policy changed')
+            seller=merchant_service.merchant(db,p['merchant_id'])
+            if not seller.get('active') or not seller.get('opt_in'):
+                raise HTTPException(409,'Merchant is no longer participating')
+            listings={item['product_id']:item for item in merchant_service.product_rows(db,p['merchant_id']) if item.get('source')=='SHOPSIDE_SANDBOX'}
+            fallback=offer['price_cents']<p['total'] and not partial_capture_enabled(p['merchant_id'])
+            for item in p['items']:
+                listing=listings.get(item['product'])
+                if not listing or not listing.get('active') or listing.get('sku')!=item.get('sku',listing.get('sku')) or listing.get('price_cents')!=item['price']:
+                    raise HTTPException(409,'Merchant listing changed')
+                row=db.execute('SELECT stock_quantity,reserved_quantity FROM merchant_inventory WHERE merchant_id=? AND product_id=?',
+                    (p['merchant_id'],item['product'])).fetchone()
+                if not row or row[0]<item['quantity'] or row[1]<item['quantity']:
+                    raise HTTPException(409,'Merchant inventory changed')
+            if not fallback:
+                p['final_total']=offer['price_cents'];p['quote_id']=offer['id']
+        if id in payment_busy:raise HTTPException(409,'Settlement already in progress')
+        if not fallback:p=claim_payment_settlement(p)
+        payment_busy.add(id)
+    settlement_total=p.get('final_total',p['total'])
+    amount=f"{settlement_total//100}.{settlement_total%100:02d}"
+    try:
+        if fallback:
+            await paypal('POST',f"/v2/payments/authorizations/{p['authorization_id']}/void",{},p['authorization_void_id'])
+            authorization=await paypal('GET',f"/v2/payments/authorizations/{p['authorization_id']}")
+            if authorization.get('status')!='VOIDED':raise HTTPException(503,'PayPal void requires reconciliation')
+            with lock:
+                s=load(r);p=payment_load(id,r)
+                db.begin()
+                try:
+                    release_merchant_reservations(p)
+                    p['status']='buyer_approval_required';payment_save(p,commit=False)
+                    s['checkout']=None;s['deal_rescue_notice']='PayPal authorization was voided because a lower capture is unavailable. Review the accepted offer and approve a new checkout.'
+                    s['revision']+=1;save(r,s,commit=False)
+                    db.execute('UPDATE settlement_jobs SET status=? WHERE payment_id=?',('fallback',id))
+                    db.commit();notify(r)
+                except Exception:db.rollback();raise
+            return {'status':'buyer_approval_required','reason':'Lower-amount capture is not enabled; buyer must approve a new checkout.'}
+        if not p.get('capture'):
+            result=await paypal('POST',f"/v2/payments/authorizations/{p['authorization_id']}/capture",
+                {'amount':{'currency_code':'USD','value':amount},'final_capture':True},p['authorization_capture_id'])
+            p['capture']=result['id'];payment_save(p)
+        capture=await paypal('GET',f"/v2/payments/captures/{p['capture']}")
+        if capture.get('status')!='COMPLETED' or not same_amount(capture.get('amount'),settlement_total):
+            raise HTTPException(409,'PayPal capture not completed or amount mismatched')
+        order=await paypal('GET',f"/v2/checkout/orders/{p['provider_id']}")
+        if order['purchase_units'][0].get('payee',{}).get('merchant_id')!=p['payee']:
+            raise HTTPException(409,'PayPal merchant mismatch')
+        with lock:
+            s=load(r);p=payment_load(id,r)
+            if p['status']=='paid':return {'status':'paid','capture_id':p.get('capture')}
+            db.begin()
+            try:
+                release_merchant_reservations(p,paid=True)
+                p['status']='paid';p['total']=settlement_total;p['paid_at']=datetime.now(timezone.utc).isoformat();p['verification']='paypal_capture_readback'
+                payment_save(p,commit=False)
+                s['checkout']={**s['checkout'],'status':'paid','total':p['total'],'paypal_order_id':p['provider_id'],'paypal_capture_id':p['capture']}
+                offer=next((o for o in s.get('flash_offers',[]) if o.get('id')==p.get('quote_id')),None)
+                if offer:offer.update(status='ORDER_COMPLETED',order_id=id,paypal_capture_id=p['capture'])
+                if offer:
+                    opportunity=merchant_service.scoped_opportunity(db,p['merchant_id'],offer['opportunity_id'])
+                    opportunity['status']='ORDER_COMPLETED';merchant_service.audit(opportunity,'payment_captured','paypal',order_id=id)
+                    db.execute('UPDATE merchant_opportunities SET state=? WHERE id=? AND merchant_id=?',
+                        (json.dumps(opportunity),opportunity['id'],p['merchant_id']))
+                db.execute('UPDATE settlement_jobs SET status=? WHERE payment_id=?',('done',id))
+                s['revision']+=1;save(r,s,commit=False);db.commit();notify(r)
+            except Exception:db.rollback();raise
+        return {'status':'paid','capture_id':p['capture']}
+    except (httpx.HTTPError,KeyError,IndexError,TypeError,ValueError) as exc:
+        raise HTTPException(502,'PayPal settlement uncertain; reconcile before retrying') from exc
+    finally:payment_busy.discard(id)
+
+@app.post('/api/internal/paypal-settlements/recover')
+def recover_settlement_jobs(request:Request):
+    if not merchant_tasks.verify(request):raise HTTPException(403,'Cloud Tasks identity required')
+    if not merchant_tasks.configured():raise HTTPException(503,'Cloud Tasks configuration required')
+    rows=db.execute('SELECT id,payment_id FROM settlement_jobs WHERE status=? LIMIT 20',('pending',)).fetchall()
+    for job_id,payment_id in rows:
+        merchant_tasks.enqueue(job_id+'-retry-'+secrets.token_hex(4),path=f'/api/internal/paypal-settlements/{payment_id}/process')
+    return {'queued':len(rows)}
+
+@app.post('/api/internal/paypal-authorizations/expire')
+async def expire_authorizations(request:Request):
+    if not merchant_tasks.verify(request):raise HTTPException(403,'Cloud Tasks identity required')
+    expired=[]
+    with lock:
+        rows=db.execute('SELECT state FROM payments').fetchall()
+        for row in rows:
+            payment=json.loads(row[0])
+            if payment.get('authorization_mode')!='PREAUTHORIZED' or payment.get('status')!='authorized':continue
+            room=load(payment['room']);consent=room.get('seller_offers') or {}
+            opportunity_closed=False
+            if payment.get('opportunity_id'):
+                op_row=db.execute('SELECT state FROM merchant_opportunities WHERE id=? AND merchant_id=?',(payment['opportunity_id'],payment['merchant_id'])).fetchone()
+                opportunity=merchant_service.read(op_row)
+                opportunity_closed=not opportunity or opportunity.get('status') in ('DECLINED','EXPIRED','CANCELLED')
+            if payment.get('authorization_expires',0)<=time.time() or not consent.get('enabled') or consent.get('expires_at',0)<=time.time() or opportunity_closed:
+                if payment['id'] not in payment_busy:
+                    payment_busy.add(payment['id']);expired.append(payment)
+    results=[]
+    for payment in expired[:20]:
+        try:
+            await paypal('POST',f"/v2/payments/authorizations/{payment['authorization_id']}/void",{},payment['authorization_void_id'])
+            authorization=await paypal('GET',f"/v2/payments/authorizations/{payment['authorization_id']}")
+            if authorization.get('status')!='VOIDED':raise HTTPException(503,'PayPal void requires reconciliation')
+            with lock:
+                current=payment_load(payment['id'],payment['room'])
+                if current['status']!='authorized':continue
+                room=load(payment['room']);db.begin()
+                try:
+                    release_merchant_reservations(current)
+                    current['status']='voided';payment_save(current,commit=False)
+                    if room.get('checkout',{}).get('id')==current['id']:room['checkout']=None
+                    room['revision']+=1;save(payment['room'],room,commit=False);db.commit();notify(payment['room'])
+                except Exception:db.rollback();raise
+            results.append(payment['id'])
+        finally:
+            with lock:payment_busy.discard(payment['id'])
+    return {'voided':results}
+def release_merchant_reservations(p,paid=False):
+    if not p.get('merchant_id') or p.get('inventory_finalized'):return
+    for item in p['items']:
+        if paid:
+            cursor=db.execute('UPDATE merchant_inventory SET stock_quantity=stock_quantity-?,reserved_quantity=reserved_quantity-? WHERE merchant_id=? AND product_id=? AND reserved_quantity>=? AND stock_quantity>=?',
+                (item['quantity'],item['quantity'],p['merchant_id'],item['product'],item['quantity'],item['quantity']))
+        else:
+            cursor=db.execute('UPDATE merchant_inventory SET reserved_quantity=reserved_quantity-? WHERE merchant_id=? AND product_id=? AND reserved_quantity>=?',
+                (item['quantity'],p['merchant_id'],item['product'],item['quantity']))
+        if cursor.rowcount!=1:raise HTTPException(409,'Merchant inventory reservation missing')
+    p['inventory_finalized']=True
 def payer(r,request):
     actor=auth(r,request); s=load(r)
     if actor!=s['payer']: raise HTTPException(403,'Only the designated payer can checkout')
     return s
+@app.get('/api/rooms/{r}/orders/{order_id}/receipt')
+@app.get('/api/rooms/{r}/merchant-orders/{order_id}/receipt')
+def merchant_order_receipt(r:str,order_id:str,request:Request):
+    with lock:
+        auth(r,request);room_state=load(r)
+        p=payment_load(order_id,r)
+        if p['status']!='paid' or not p.get('capture'):raise HTTPException(404,'Completed sandbox order not found')
+        trail=[];rescue=None
+        labels={'offer_published':'Merchant offer published','accepted':'Buyer accepted the offer',
+                'auto_accepted_within_buyer_limit':'Offer accepted within buyer limit',
+                'buyer_agent_countered':'Buyer agent countered within approved limit',
+                'countered':'Buyer counteroffered','offer_proposed':'Seller proposed an offer',
+                'human_approved':'Merchant approved the proposal',
+                'payment_captured':'PayPal Sandbox payment verified'}
+        for row in db.execute('SELECT state FROM merchant_opportunities WHERE room_id=?',(r,)).fetchall():
+            opportunity=merchant_service.read(row)
+            if (opportunity.get('offer') or {}).get('id')!=p.get('quote_id'):continue
+            rescue=opportunity
+            trail=[{'event':entry['event'],'label':labels[entry['event']],'actor':entry.get('actor'),
+                    'at':entry.get('at')} for entry in opportunity.get('activity',[])
+                   if entry.get('event') in labels and isinstance(entry.get('at'),(int,float))]
+            break
+        if p.get('authorized_at'):
+            trail.append({'event':'paypal_authorized','label':'Buyer approved PayPal authorization','actor':p['payer'],
+                'at':datetime.fromisoformat(p['authorized_at']).timestamp()})
+        paid_at=p.get('paid_at') or p.get('verified_at')
+        if paid_at and not any(item['event']=='payment_captured' for item in trail):
+            trail.append({'event':'payment_captured','label':'PayPal Sandbox capture verified','actor':'paypal',
+                'at':datetime.fromisoformat(paid_at).timestamp()})
+        trail.sort(key=lambda item:item['at'])
+        reference_total=p.get('reference_total',p['total'])
+        return {'order_id':p['id'],'checkout_mode':CheckoutMode.SHOP_SIDE_MERCHANT,'merchant_id':p.get('merchant_id'),'merchant_name':p.get('merchant_name') or 'ShopSide sandbox catalog',
+            'items':[{'product_id':line['product'],'name':line['name'],'quantity':line['quantity'],
+                      'variant':line.get('variant'),'reference_price_cents':line['price']} for line in p['items']],
+            'reference_total_cents':reference_total,'total_cents':p['total'],
+            'savings_cents':reference_total-p['total'],'currency':p['currency'],
+            'paypal_sandbox_order_id':p['provider_id'],'paypal_sandbox_authorization_id':p.get('authorization_id'),
+            'paypal_sandbox_capture_id':p['capture'],'paid_at':paid_at,
+            'deal_rescue_id':rescue.get('id') if rescue else p.get('opportunity_id'),
+            'buyer_maximum_cents':p.get('authorized_amount_cents',p['total']),
+            'authorized_at':p.get('authorized_at'),'buyer_policy_version':p.get('policy_version'),
+            'merchant_explanation':(rescue.get('offer') or {}).get('explanation') if rescue else None,
+            'seller_approved_at':next((entry['at'] for entry in reversed((rescue or {}).get('activity',[])) if entry.get('event')=='human_approved'),None),
+            'room_members':room_state['people'],'payer':p['payer'],'decision_trail':trail,
+            'disclosure':'Fictional ShopSide sandbox products; no goods shipped and no real money charged.'}
 @app.get('/api/paypal/config')
 def payment_config(): return {'client_id':os.getenv('PAYPAL_CLIENT_ID'),'currency':'USD'}
+@app.post('/api/paypal/webhook')
+async def paypal_webhook(request:Request):
+    webhook_id=os.getenv('PAYPAL_WEBHOOK_ID')
+    if not webhook_id:raise HTTPException(503,'PayPal webhook is not configured')
+    try: event=await request.json()
+    except (ValueError, UnicodeDecodeError): raise HTTPException(400,'Invalid PayPal event JSON')
+    event_id=event.get('id') if isinstance(event,dict) else None
+    if not isinstance(event_id,str) or not event_id:raise HTTPException(400,'Invalid PayPal event')
+    required=('paypal-auth-algo','paypal-cert-url','paypal-transmission-id','paypal-transmission-sig','paypal-transmission-time')
+    if any(not request.headers.get(name) for name in required):raise HTTPException(400,'PayPal signature headers required')
+    verified=await paypal('POST','/v1/notifications/verify-webhook-signature',{
+        'auth_algo':request.headers['paypal-auth-algo'],'cert_url':request.headers['paypal-cert-url'],
+        'transmission_id':request.headers['paypal-transmission-id'],'transmission_sig':request.headers['paypal-transmission-sig'],
+        'transmission_time':request.headers['paypal-transmission-time'],'webhook_id':webhook_id,'webhook_event':event})
+    if verified.get('verification_status')!='SUCCESS':raise HTTPException(403,'PayPal signature invalid')
+    resource=event.get('resource') if isinstance(event.get('resource'),dict) else {}
+    related=resource.get('supplementary_data',{}).get('related_ids',{}) if isinstance(resource.get('supplementary_data'),dict) else {}
+    order_id=related.get('order_id') if isinstance(related,dict) else None
+    event_type=str(event.get('event_type',''))[:100]
+    if not order_id and event_type.startswith('CHECKOUT.ORDER.'):
+        order_id=resource.get('id')
+    capture_id=resource.get('id') if event_type=='PAYMENT.CAPTURE.COMPLETED' else None
+    authorization_id=resource.get('id') if event_type=='PAYMENT.AUTHORIZATION.CREATED' else None
+    with lock:
+        db.execute('INSERT INTO paypal_webhook_events(id,event_type,received_at) VALUES(?,?,?) ON CONFLICT(id) DO NOTHING',
+            (event_id,event_type,datetime.now(timezone.utc).isoformat()))
+        db.execute('INSERT INTO paypal_webhook_payloads(id,state) VALUES(?,?) ON CONFLICT(id) DO NOTHING',
+            (event_id,json.dumps({'order_id':order_id,'capture_id':capture_id,'authorization_id':authorization_id,
+                'event_type':event_type,'status':'pending'})))
+        db.commit()
+    if merchant_tasks.configured():
+        merchant_tasks.enqueue('paypal-webhook-'+event_id,path=f'/api/internal/paypal-events/{event_id}/process')
+    return {'received':True}
+
+@app.post('/api/internal/paypal-events/{event_id}/process')
+async def reconcile_paypal_event(event_id:str,request:Request):
+    from .payment_authorization import same_amount
+    if not merchant_tasks.verify(request):raise HTTPException(403,'Cloud Tasks identity required')
+    row=db.execute('SELECT state FROM paypal_webhook_payloads WHERE id=?',(event_id,)).fetchone()
+    if not row:raise HTTPException(404,'PayPal event not found')
+    event=json.loads(row[0])
+    if event.get('status')=='processed':return {'status':'processed'}
+    order_id=event.get('order_id')
+    if not order_id:return {'status':'unmatched'}
+    with lock:
+        payment=next((json.loads(row[0]) for row in db.execute('SELECT state FROM payments').fetchall()
+            if json.loads(row[0]).get('provider_id')==order_id),None)
+    if not payment:return {'status':'unmatched'}
+    if payment['status']=='paid':
+        event['status']='processed'
+    elif event.get('event_type')=='PAYMENT.CAPTURE.COMPLETED' and payment.get('authorization_mode')=='PREAUTHORIZED':
+        if payment['status']!='capture_pending':return {'status':'awaiting_local_capture'}
+        if payment.get('capture') and payment['capture']!=event.get('capture_id'):
+            raise HTTPException(409,'Capture ID differs from the local settlement')
+        if not payment.get('capture'):
+            payment['capture']=event['capture_id'];payment_save(payment)
+        result=await settle_authorized_payment(payment['id'],request)
+        event['status']='processed'
+        db.execute('UPDATE paypal_webhook_payloads SET state=? WHERE id=?',(json.dumps(event),event_id));db.commit()
+        return result
+    elif event.get('event_type')=='PAYMENT.CAPTURE.COMPLETED':
+        if payment['status'] not in ('pending','approval'):return {'status':'awaiting_local_capture'}
+        order=await paypal('GET',f'/v2/checkout/orders/{order_id}')
+        unit=order['purchase_units'][0]
+        captures=unit.get('payments',{}).get('captures',[])
+        capture=next((item for item in captures if item.get('id')==event.get('capture_id')),None)
+        if order.get('status')!='COMPLETED' or not capture or capture.get('status')!='COMPLETED' or not same_amount(capture.get('amount'),payment['total']):
+            raise HTTPException(409,'PayPal capture readback is incomplete or mismatched')
+        if unit.get('payee',{}).get('merchant_id')!=os.environ.get('PAYPAL_MERCHANT_ID'):
+            raise HTTPException(409,'PayPal payee mismatch')
+        with lock:
+            p=payment_load(payment['id'],payment['room']);room=load(payment['room'])
+            if p['status']!='paid':
+                db.begin()
+                try:
+                    p['status']='paid';p['capture']=capture['id'];p['paid_at']=datetime.now(timezone.utc).isoformat();p['verification']='paypal_webhook_order_readback'
+                    if p.get('merchant_id'):release_merchant_reservations(p,paid=True)
+                    payment_save(p,commit=False)
+                    room['checkout']={**(room.get('checkout') or {}),'id':p['id'],'status':'paid','total':p['total'],
+                        'currency':'USD','paypal_order_id':order_id,'paypal_capture_id':p['capture']}
+                    offer=next((o for o in room.get('flash_offers',[]) if o.get('id')==p.get('quote_id')),None)
+                    if offer:
+                        offer.update(status='ORDER_COMPLETED',order_id=p['id'],paypal_capture_id=p['capture'])
+                        opportunity=merchant_service.scoped_opportunity(db,p['merchant_id'],offer['opportunity_id'])
+                        opportunity['status']='ORDER_COMPLETED';merchant_service.audit(opportunity,'payment_captured','paypal',order_id=p['id'])
+                        db.execute('UPDATE merchant_opportunities SET state=? WHERE id=? AND merchant_id=?',
+                            (json.dumps(opportunity),opportunity['id'],p['merchant_id']))
+                    room['revision']+=1;save(payment['room'],room,commit=False);db.commit();notify(payment['room'])
+                except Exception:db.rollback();raise
+        event['status']='processed'
+    elif event.get('event_type')=='PAYMENT.AUTHORIZATION.CREATED' and payment.get('authorization_mode')=='PREAUTHORIZED':
+        if payment['status'] not in ('approval','authorizing','authorized'):return {'status':'not_authorizable'}
+        order=await paypal('GET',f'/v2/checkout/orders/{order_id}')
+        unit=order['purchase_units'][0]
+        authorization=next((item for item in unit.get('payments',{}).get('authorizations',[])
+            if item.get('id')==event.get('authorization_id')),None)
+        if not authorization or authorization.get('status')!='CREATED' or not same_amount(authorization.get('amount'),payment['total']) or not same_amount(unit.get('amount'),payment['total']) or unit.get('payee',{}).get('merchant_id')!=payment['payee']:
+            raise HTTPException(409,'PayPal authorization readback mismatch')
+        with lock:
+            p=payment_load(payment['id'],payment['room']);room=load(payment['room'])
+            if p['status'] in ('approval','authorizing'):
+                p['authorization_id']=authorization['id'];p['status']='authorized';p['authorized_at']=datetime.now(timezone.utc).isoformat();payment_save(p)
+                room['checkout']={**(room.get('checkout') or {}),'id':p['id'],'status':'authorized','total':p['total'],
+                    'currency':'USD','authorization_mode':'PREAUTHORIZED'}
+                room['revision']+=1;save(payment['room'],room)
+                ready=next((offer for offer in room.get('flash_offers',[]) if offer.get('status')=='ACCEPTED' and
+                    (offer.get('id')==p.get('quote_id') or offer.get('opportunity_id')==p.get('opportunity_id'))),None)
+                consent=room.get('seller_offers') or {}
+                if not consent.get('enabled') or consent.get('expires_at',0)<=time.time():
+                    if merchant_tasks.configured():merchant_tasks.enqueue('paypal-expire-webhook-'+event_id,path='/api/internal/paypal-authorizations/expire')
+                elif ready:schedule_authorized_settlements(payment['room'],ready)
+        event['status']='processed'
+    else:return {'status':'ignored'}
+    db.execute('UPDATE paypal_webhook_payloads SET state=? WHERE id=?',(json.dumps(event),event_id));db.commit()
+    return {'status':'processed'}
+
+@app.post('/api/channel3/webhooks')
+async def channel3_webhook(request:Request):
+    from svix.webhooks import Webhook, WebhookVerificationError
+    secret=os.getenv('CHANNEL3_WEBHOOK_SECRET')
+    if not secret:raise HTTPException(503,'Channel3 webhook is not configured')
+    raw=await request.body()
+    if len(raw)>262144:raise HTTPException(413,'Webhook event is too large')
+    required=('svix-id','svix-timestamp','svix-signature')
+    if any(not request.headers.get(name) for name in required):raise HTTPException(400,'Svix signature headers required')
+    try:Webhook(secret).verify(raw,{name:request.headers[name] for name in required})
+    except (WebhookVerificationError,ValueError) as exc:raise HTTPException(403,'Channel3 webhook signature invalid') from exc
+    try:event=json.loads(raw)
+    except (ValueError,UnicodeDecodeError) as exc:raise HTTPException(400,'Invalid Channel3 event JSON') from exc
+    if not isinstance(event,dict):raise HTTPException(400,'Invalid Channel3 event')
+    event_id=request.headers['svix-id']
+    event_type=str(event.get('type') or event.get('event_type') or '')[:100]
+    with lock:
+        db.execute('INSERT INTO channel3_webhook_events(id,event_type,received_at,state) VALUES(?,?,?,?) ON CONFLICT(id) DO NOTHING',
+            (event_id,event_type,datetime.now(timezone.utc).isoformat(),json.dumps({'type':event_type,'data':event.get('data'),'status':'pending'})))
+        db.commit()
+    if merchant_tasks.configured():
+        merchant_tasks.enqueue('channel3-'+event_id,path='/api/internal/channel3-events/'+event_id+'/process')
+    return {'received':True}
+
+@app.post('/api/internal/channel3-events/{event_id}/process')
+def process_channel3_event(event_id:str,request:Request):
+    if not merchant_tasks.verify(request):raise HTTPException(403,'Cloud Tasks identity required')
+    with lock:
+        row=db.execute('SELECT state FROM channel3_webhook_events WHERE id=?',(event_id,)).fetchone()
+        if not row:raise HTTPException(404,'Event not found')
+        event=json.loads(row[0])
+        if event.get('status')=='processed':return {'status':'processed'}
+        if event.get('type') not in ('offer.price.changed','offer.availability.changed','offer.created','offer.deleted'):
+            event['status']='ignored'
+            db.execute('UPDATE channel3_webhook_events SET state=? WHERE id=?',(json.dumps(event),event_id));db.commit()
+            return {'status':'ignored'}
+        data=event.get('data') or {}
+        if not isinstance(data,dict):data={}
+        subscription=data.get('subscription') if isinstance(data.get('subscription'),dict) else {}
+        product_ref=data.get('product') if isinstance(data.get('product'),dict) else {}
+        subscription_id=data.get('subscription_id') or subscription.get('id')
+        product_id=data.get('product_id') or product_ref.get('id')
+        if isinstance(subscription_id,str):
+            watches=db.execute('SELECT state FROM channel3_watches WHERE subscription_id=? AND status=?',(subscription_id,'active')).fetchall()
+        elif isinstance(product_id,str):
+            watches=db.execute('SELECT state FROM channel3_watches WHERE product_id=? AND status=?',('channel3:'+product_id.removeprefix('channel3:'),'active')).fetchall()
+        else:
+            # Unknown provider payloads remain available for reconciliation.
+            return {'status':'pending','reason':'Channel3 event does not identify a watched subscription or product'}
+    from .discovery import product_details
+    offers_by_scope={}
+    for row in watches:
+        watch=json.loads(row[0]);scope=json.loads(watch['scope'])
+        if watch['scope'] in offers_by_scope:continue
+        product=product_details(watch['product_id'].removeprefix('channel3:'),
+            {item['name']:item['label'] for item in scope.get('selection',[])})
+        offers_by_scope[watch['scope']]=offers_in_watch_currency(product.get('offers',[]),scope)
+    with lock:
+        for row in watches:
+            watch=json.loads(row[0])
+            scope=json.loads(watch['scope'])
+            eligible=[offer for offer in offers_by_scope[watch['scope']] if not scope['domains'] or offer.get('retailer') in scope['domains']]
+            best=min((offer['price_cents'] for offer in eligible if isinstance(offer.get('price_cents'),int)),default=None)
+            available=any(offer.get('availability')=='InStock' for offer in eligible)
+            price_hit=best is not None and best<=watch['threshold_cents']
+            availability_hit=event['type'] in ('offer.availability.changed','offer.created') and available
+            if not price_hit and not availability_hit:continue
+            room=load(watch['room'])
+            alert={'id':event_id+':'+watch['id'],'participant':watch['participant'],'product_id':watch['product_id'],'price_cents':best,'currency':scope.get('currency','USD'),'observed_at':datetime.now(timezone.utc).isoformat(),
+                'kind':'price' if price_hit else 'availability',
+                'message':'A watched offer is at or below your price threshold. Check the retailer before buying.' if price_hit else 'Channel3 detected an in-stock retailer offer. Check the current listing before buying.'}
+            alerts=room.setdefault('price_watch_alerts',[])
+            if not any(item['id']==alert['id'] for item in alerts):
+                alerts.append(alert);room['price_watch_alerts']=alerts[-100:];room['revision']+=1;save(watch['room'],room)
+        event['status']='processed'
+        db.execute('UPDATE channel3_webhook_events SET state=? WHERE id=?',(json.dumps(event),event_id));db.commit()
+    return {'status':'processed'}
 @app.post('/api/rooms/{r}/quote')
 def quote(r:str,request:Request):
     with lock:
@@ -441,15 +1527,6 @@ def quote(r:str,request:Request):
             if item['quantity']>stock(item['product'],item['variant']): raise HTTPException(409,'Out of stock')
             items.append(dict(**item,price=product['price'],name=product['name'],offer_id='demo:'+item['product']+':'+item['variant']))
         total=sum(i['price']*i['quantity'] for i in items)
-        if s.get('relocation'):
-            policy=RelocationPolicy.model_validate(s['relocation']['policy'])
-            spent=0
-            for item in items:
-                product=next(p for p in catalog if p['id']==item['product'])
-                result=policy_eligibility(policy,product.get('category',''),item['price']*item['quantity'],'USD',spent)
-                if not result['eligible']:raise HTTPException(422,result['reason'])
-                if result['approval_required']:raise HTTPException(409,'Administrator approval is required; approval workflow is not connected')
-                spent+=item['price']*item['quantity']
         p=dict(revision=s['revision'],fees=0,id=secrets.token_urlsafe(20),room=r,payer=s['payer'],items=items,total=total,currency='USD',expires=time.time()+600,status='quoted',create_id=secrets.token_hex(16),capture_id=secrets.token_hex(16))
         try:
             db.begin()
@@ -462,10 +1539,56 @@ def quote(r:str,request:Request):
         except Exception:
             db.rollback(); raise
         return p
+@app.post('/api/rooms/{r}/seller-offers/{offer_id}/checkout')
+def merchant_offer_checkout(r:str,offer_id:str,request:Request):
+    with lock:
+        s=payer(r,request)
+        if s.get('checkout'):raise HTTPException(409,'An active checkout already exists')
+        offer=next((o for o in s.get('flash_offers',[]) if o['id']==offer_id),None)
+        if not offer or offer['status']!='ACCEPTED':raise HTTPException(409,'Accept the merchant offer first')
+        if offer['expires_at']<=merchant_service.now():raise HTTPException(409,'Merchant offer expired')
+        merchant_id=offer['merchant_id']
+        opportunity=merchant_service.scoped_opportunity(db,merchant_id,offer['opportunity_id'])
+        consent=s.get('seller_offers') or {}
+        if not consent.get('enabled') or consent.get('demand_key')!=opportunity.get('demand_key') or consent.get('expires_at',0)<=merchant_service.now():
+            raise HTTPException(409,'Seller-offer consent has expired or been revoked')
+        m=merchant_service.merchant(db,merchant_id)
+        if not m['opt_in'] or not m['active']:raise HTTPException(409,'Merchant is unavailable')
+        products={p['product_id']:p for p in merchant_service.product_rows(db,merchant_id) if p.get('source')=='SHOPSIDE_SANDBOX'}
+        items=[]
+        for line in offer['items']:
+            product=products.get(line['product_id'])
+            if not product or not product['active'] or product['price_cents']!=line['price_cents'] or product['stock_quantity']<line['quantity']:
+                raise HTTPException(409,'Merchant product changed or is out of stock')
+            require_checkout_mode(product.get('source',''),CheckoutMode.SHOP_SIDE_MERCHANT)
+            items.append({'product':product['product_id'],'variant':'standard','quantity':line['quantity'],'price':line['price_cents'],'name':product['title']})
+        if sum(i['price']*i['quantity'] for i in items)!=offer['reference_price_cents'] or offer['price_cents']<=0:
+            raise HTTPException(409,'Merchant quote amount changed')
+        try: preauthorization_available=bool(json.loads(os.getenv('PAYPAL_MERCHANT_IDS_JSON','{}')).get(merchant_id))
+        except (ValueError,AttributeError):preauthorization_available=False
+        p=dict(id=secrets.token_urlsafe(20),room=r,payer=s['payer'],merchant_id=merchant_id,merchant_name=m['name'],quote_id=offer_id,checkout_mode=CheckoutMode.SHOP_SIDE_MERCHANT,preauthorization_available=preauthorization_available,
+            items=items,total=offer['price_cents'],reference_total=offer['reference_price_cents'],currency='USD',
+            expires=min(offer['expires_at'],time.time()+600),status='quoted',create_id=secrets.token_hex(16),capture_id=secrets.token_hex(16))
+        try:
+            db.begin()
+            for line in items:
+                cursor=db.execute('UPDATE merchant_inventory SET reserved_quantity=reserved_quantity+? WHERE merchant_id=? AND product_id=? AND stock_quantity-reserved_quantity>=?',
+                    (line['quantity'],merchant_id,line['product'],line['quantity']))
+                if cursor.rowcount!=1:raise HTTPException(409,'Merchant item out of stock')
+            payment_save(p,commit=False)
+            db.execute('INSERT INTO merchant_orders(id,merchant_id,state) VALUES(?,?,?)',(p['id'],merchant_id,json.dumps(p)))
+            s['checkout']={'id':p['id'],'status':'quoted','total':p['total'],'currency':'USD','merchant_id':merchant_id,'quote_id':offer_id}
+            s['revision']+=1;save(r,s,commit=False);db.commit();notify(r)
+        except Exception:
+            db.rollback();raise
+        return p
 @app.post('/api/rooms/{r}/payments/{id}/{action}')
 async def payment(r:str,id:str,action:str,request:Request,background_tasks:BackgroundTasks):
+    from .payment_authorization import same_amount
     with lock:
         s=payer(r,request); p=payment_load(id,r)
+        if p.get('authorization_mode')=='PREAUTHORIZED' or (p.get('provisional') and action!='cancel'):
+            raise HTTPException(409,'Use the authorization checkout controls for this order')
         if p['status']=='cancelled' or not s.get('checkout') or s['checkout']['id']!=id: raise HTTPException(409,'Checkout is no longer active')
         if action not in ['create','capture','status','cancel']: raise HTTPException(404)
         if id in payment_busy: raise HTTPException(409,'Payment operation already in progress')
@@ -474,13 +1597,24 @@ async def payment(r:str,id:str,action:str,request:Request,background_tasks:Backg
             if p['status']!='quoted': raise HTTPException(409,'Reconcile payment before cancellation')
             try:
                 db.begin()
-                for item in p['items']: db.execute('UPDATE inventory SET stock=stock+? WHERE product=? AND variant=?',(item['quantity'],item['product'],item['variant']))
+                if p.get('merchant_id'):release_merchant_reservations(p)
+                else:
+                    for item in p['items']: db.execute('UPDATE inventory SET stock=stock+? WHERE product=? AND variant=?',(item['quantity'],item['product'],item['variant']))
                 p['status']='cancelled'; payment_save(p,commit=False)
                 s['checkout']=None; s['revision']+=1; save(r,s,commit=False); db.commit(); notify(r)
             except Exception:
                 db.rollback(); raise
             return {'status':'cancelled'}
         if action=='create' and time.time()>p['expires']: raise HTTPException(409,'Quote expired; cancel and request a new quote')
+        if action=='capture' and p['status']!='pending' and time.time()>p['expires']:
+            raise HTTPException(409,'Quote expired; payment cannot be captured')
+        if p.get('merchant_id') and (action=='create' or (action=='capture' and p['status']!='pending')):
+            offer=next ( (item for item in s.get('flash_offers',[]) if item.get('id')==p.get('quote_id')), None )
+            if not offer or offer.get('status')!='ACCEPTED':raise HTTPException(409,'Merchant offer is no longer accepted')
+            opportunity=merchant_service.scoped_opportunity(db,p['merchant_id'],offer['opportunity_id'])
+            consent=s.get('seller_offers') or {}
+            if not consent.get('enabled') or consent.get('demand_key')!=opportunity.get('demand_key') or consent.get('expires_at',0)<=merchant_service.now():
+                raise HTTPException(409,'Seller-offer consent has expired or been revoked')
         payment_busy.add(id)
     try:
         amount=f"{p['total']//100}.{p['total']%100:02d}"
@@ -498,10 +1632,31 @@ async def payment(r:str,id:str,action:str,request:Request,background_tasks:Backg
             captures=unit.get('payments',{}).get('captures',[])
             if result['status']=='COMPLETED' and captures:
                 capture=captures[0]
-                if capture['status']!='COMPLETED' or capture['amount']!={'currency_code':'USD','value':amount} or unit.get('payee',{}).get('merchant_id')!=os.environ['PAYPAL_MERCHANT_ID']: raise HTTPException(409,'Provider verification mismatch')
-                p['status']='paid'; p['capture']=capture['id']; p['verified_at']=datetime.now(timezone.utc).isoformat(); p['verification']='paypal_order_readback'; payment_save(p)
+                if capture['status']!='COMPLETED' or not same_amount(capture.get('amount'),p['total']) or unit.get('payee',{}).get('merchant_id')!=os.environ['PAYPAL_MERCHANT_ID']: raise HTTPException(409,'Provider verification mismatch')
+                p['status']='paid'; p['capture']=capture['id']; p['verified_at']=datetime.now(timezone.utc).isoformat(); p.setdefault('paid_at',p['verified_at']); p['verification']='paypal_order_readback'
+                if not p.get('merchant_id'):payment_save(p)
         with lock:
             s=load(r); s['checkout']={'id':id,'status':p['status'],'total':p['total'],'currency':'USD'}
+            if p['status']=='paid':s['checkout'].update(order_id=p['id'],paypal_order_id=p.get('provider_id'),paypal_capture_id=p.get('capture'))
+            if p.get('merchant_id'):
+                s['checkout'].update(merchant_id=p['merchant_id'],quote_id=p['quote_id'])
+            if p['status']=='paid' and p.get('merchant_id'):
+                db.begin()
+                try:
+                    release_merchant_reservations(p,paid=True)
+                    p['paid_at']=datetime.now(timezone.utc).isoformat()
+                    payment_save(p,commit=False)
+                    offer=next((o for o in s.get('flash_offers',[]) if o['id']==p['quote_id']),None)
+                    if offer:
+                        offer['status']='ORDER_COMPLETED';offer['order_id']=p['id'];offer['paypal_capture_id']=p['capture']
+                    op=merchant_service.scoped_opportunity(db,p['merchant_id'],offer['opportunity_id']) if offer else None
+                    if op:
+                        op['status']='ORDER_COMPLETED';merchant_service.audit(op,'payment_captured','paypal',order_id=p['id'])
+                        db.execute('UPDATE merchant_opportunities SET state=? WHERE id=? AND merchant_id=?',(json.dumps(op),op['id'],p['merchant_id']))
+                    s['revision']+=1;save(r,s,commit=False);db.commit();notify(r)
+                except Exception:
+                    db.rollback();raise
+                return {'status':'paid','order_id':p.get('provider_id'),'local_order_id':p['id'],'capture':p.get('capture')}
             if p['status']=='paid' and s.get('move_in'):
                 plan=s['move_in']
                 for line in p['items']:
@@ -511,8 +1666,8 @@ async def payment(r:str,id:str,action:str,request:Request,background_tasks:Backg
             s['revision']+=1; save(r,s)
         if p['status']=='paid':
             background_tasks.add_task(auto_memory_receipts,r,[line['product'] for line in p['items']])
-        return {'status':p['status'],'order_id':p.get('provider_id'),'capture':p.get('capture')}
-    except (httpx.HTTPError,KeyError) as exc:
+        return {'status':p['status'],'order_id':p.get('provider_id'),'local_order_id':p['id'],'capture':p.get('capture')}
+    except (httpx.HTTPError,KeyError,IndexError,TypeError,ValueError) as exc:
         raise HTTPException(502,'Provider outcome uncertain; check payment status before retrying') from exc
     finally: payment_busy.discard(id)
 
@@ -549,7 +1704,7 @@ async def create_memory_receipt(r,product_id):
         existing=state.get('memory_receipts',{}).get(product_id)
         if existing:return existing
         facts=memory_facts(r,state,product_id)
-        if not facts:raise HTTPException(409,'A receipt requires two timestamped approvals and two independently verified sandbox payments for this item')
+        if not facts:raise HTTPException(409,'A memory requires two timestamped approvals and one verified sandbox payment by the room payer for this item')
         if key in memory_busy:raise HTTPException(409,'This memory is being created')
         memory_busy.add(key)
     try:
@@ -579,7 +1734,7 @@ def memory_status(r:str,request:Request):
         ids=state.get('move_in',{}).get('items',{})
         payments=[json.loads(row[0]) for row in db.execute('SELECT state FROM payments WHERE room=?',(r,)).fetchall()] if ids else []
         return {'ready':[product_id for product_id in ids if eligible_memory(state,product_id,payments)],
-                'receipts':list(state.get('memory_receipts',{}).values()),'checkout_supports_two_payers':False}
+                'receipts':list(state.get('memory_receipts',{}).values()),'payment_model':'one_designated_payer'}
 
 @app.post('/api/rooms/{r}/memory-receipts')
 async def make_memory(r:str,body:MemoryRequest,request:Request):
@@ -592,6 +1747,8 @@ def edit_mission(r:str,body:MissionEdit,request:Request):
         actor=auth(r,request);s=load(r)
         if not move_in_check(s,body):return {'ok':True}
         move_in_state(s)['mission']=body.mission.model_dump(mode='json')
+        s.pop('bundle_options',None)
+        invalidate_smart_bundle(s)
         move_in_save(r,s,body,actor,'Updated the move-in mission')
     return {'ok':True}
 
@@ -634,6 +1791,8 @@ async def move_in_turn(r:str,body:MissionTurn,request:Request):
             current=load(r);current_state=move_in_state(current)
             if current_state!=prior:raise HTTPException(409,'Mission changed while the assistant was thinking; retry')
             current_state.update(mission=result.mission.model_dump(mode='json'),history=history,question_count=count,question=question)
+            current.pop('bundle_options',None)
+            invalidate_smart_bundle(current)
             move_in_save(r,current,body,actor,'Updated the mission with AI')
         return {'ok':True}
     except HTTPException:raise
@@ -699,54 +1858,12 @@ def move_in_percentage_allocation(r:str,body:PercentageAllocation,request:Reques
         move_in_save(r,s,body,actor,'Recorded a percentage cost share')
     return {'ok':True}
 
-def relocation_admin(request:Request):
-    expected=os.getenv('RELOCATION_ADMIN_TOKEN','')
-    token=request.headers.get('authorization','')
-    if not expected:raise HTTPException(503,'Relocation Desk is not configured')
-    if not token.startswith('Bearer ') or not secrets.compare_digest(token[7:],expected):raise HTTPException(403,'Administrator access required')
-
-@app.post('/api/relocation/policies')
-def create_relocation_policy(body:RelocationPolicy,request:Request):
-    relocation_admin(request)
-    code=secrets.token_urlsafe(32)
-    with lock:
-        db.execute('INSERT INTO relocation_policies(id,state) VALUES(?,?)',(code,body.model_dump_json()));db.commit()
-    return {'code':code,'policy':body.model_dump(mode='json')}
-
-@app.get('/api/relocation/policies/{code}/ledger')
-def relocation_ledger(code:str,request:Request):
-    relocation_admin(request)
-    with lock:
-        row=db.execute('SELECT state FROM relocation_policies WHERE id=?',(code,)).fetchone()
-        if not row:raise HTTPException(404,'Policy not found')
-        policy=json.loads(row[0]);entries=[]
-        for (raw,) in db.execute('SELECT state FROM rooms').fetchall():
-            state=json.loads(raw)
-            if state.get('relocation',{}).get('policy_id')!=code:continue
-            checkout=state.get('checkout') or {}
-            if checkout.get('status')=='paid':
-                entries.append({'room_id':state['id'],'status':'paid','total_cents':checkout['total'],'currency':checkout['currency'],'payment_reference':checkout['id']})
-        return {'policy':policy,'entries':entries,'spent_cents':sum(e['total_cents'] for e in entries if e['currency']==policy['currency'])}
-
-@app.post('/api/rooms/{r}/relocation/check')
-def check_relocation(r:str,body:PolicyCheck,request:Request):
-    with lock:
-        auth(r,request);s=load(r)
-        if body.revision!=s['revision']:raise HTTPException(409,'Room changed; refresh and retry')
-        relocation=s.get('relocation')
-        if not relocation:raise HTTPException(409,'No relocation policy is attached')
-        product=next((p for p in catalog if p['id']==body.product_id),None)
-        if not product:raise HTTPException(422,'Verified category and price are unavailable for this product')
-        policy=RelocationPolicy.model_validate(relocation['policy'])
-        checkout=s.get('checkout') or {};spent=checkout.get('total',0) if checkout.get('status')=='paid' and checkout.get('currency')==policy.currency else 0
-        return policy_eligibility(policy,product.get('category',''),product['price'],product['currency'],spent)
-
 @app.post('/api/rooms/{r}/discovery')
 def discover(r:str,body:Search,request:Request):
     auth(r,request)
     found=search_products(body.query,body.max_price)
     with lock:
-        s=load(r); s['discovery']=found; s['search_query']=body.query; s['revision']+=1; save(r,s)
+        s=load(r); preserve_shortlisted_products(s); s['discovery']=found; s['search_query']=body.query; s['revision']+=1; save(r,s)
     return {'products':found}
 @app.post('/api/rooms/{r}/search')
 def refined_search(r:str,body:AdvancedSearch,request:Request):
@@ -755,20 +1872,161 @@ def refined_search(r:str,body:AdvancedSearch,request:Request):
         state=load(r)
         if body.command_id in state['commands']: return {'ok':True}
         if state['revision']!=body.revision: raise HTTPException(409,'Room changed; refresh and retry')
+        if body.page_token:
+            filters=state.get('search_filters') or {}
+            if body.page_token!=state.get('search_page_token') or body.query!=state.get('search_query') or any(filters.get(key)!=value for key,value in {'min_price':body.min_price,'max_price':body.max_price,'availability':body.availability,'mode':body.mode,'brand':body.brand,'retailer_domain':body.retailer_domain,'category':body.category,'condition':body.condition,'color_hex':body.color_hex,'country':body.country,'currency':body.currency,'language':body.language}.items()):
+                raise HTTPException(409,'Search filters changed. Run a new search before loading the next page.')
     result=advanced_search(body)
     with lock:
         state=load(r)
         if state['revision']!=body.revision: raise HTTPException(409,'Room changed while searching; retry')
+        preserve_shortlisted_products(state)
         state['discovery']=result['products']
         state['search_query']=body.query
         state['search_page_token']=result['next_page_token']
-        state['search_filters']={'min_price':body.min_price,'max_price':body.max_price,'availability':body.availability,'mode':body.mode}
+        state['search_filters']={'min_price':body.min_price,'max_price':body.max_price,'availability':body.availability,'mode':body.mode,'brand':body.brand,'retailer_domain':body.retailer_domain,'category':body.category,'condition':body.condition,'color_hex':body.color_hex,'country':body.country,'currency':body.currency,'language':body.language}
         state['commands'].append(body.command_id);state['revision']+=1;save(r,state)
     return result
 
+class VisualDiscovery(BaseModel):
+    url:str=Field(min_length=12,max_length=2000)
+    kind:str=Field(pattern='^(image|product)$')
+    revision:int
+    command_id:str=Field(min_length=1,max_length=100)
+
+@app.post('/api/rooms/{r}/discovery/visual')
+def visual_discovery(r:str,body:VisualDiscovery,request:Request):
+    from urllib.parse import urlparse
+    import ipaddress
+    from .discovery import request as channel3_request, normalize
+    parsed=urlparse(body.url)
+    if parsed.scheme!='https' or not parsed.hostname or parsed.username or parsed.password or '.' not in parsed.hostname:
+        raise HTTPException(422,'Enter a public HTTPS image or product URL')
+    try:ipaddress.ip_address(parsed.hostname)
+    except ValueError:pass
+    else:raise HTTPException(422,'Use a public domain, not an IP address')
+    with lock:
+        auth(r,request);state=load(r)
+        if body.command_id in state['commands']:return {'ok':True}
+        if state['revision']!=body.revision:raise HTTPException(409,'Room changed; refresh and retry')
+    if body.kind=='image':
+        result=channel3_request('/v1/search',{'image_url':body.url,'limit':12})
+        raw=result.get('products') if isinstance(result,dict) else None
+    else:
+        result=channel3_request('/v1/lookup',{'url':body.url})
+        raw=[result.get('product')] if isinstance(result,dict) else None
+    if not isinstance(raw,list) or any(not isinstance(p,dict) for p in raw):
+        raise HTTPException(502,'Channel3 visual discovery returned an invalid response')
+    products=[normalize(p) for p in raw]
+    with lock:
+        state=load(r)
+        if state['revision']!=body.revision:raise HTTPException(409,'Room changed while searching; retry')
+        preserve_shortlisted_products(state);state['discovery']=products;state['search_query']='Image search' if body.kind=='image' else 'Product URL lookup'
+        state['search_page_token']=None;state['commands'].append(body.command_id);state['revision']+=1;save(r,state)
+    return {'products':products,'source':'Channel3','retrieved_at':time.time()}
+
 @app.get('/api/rooms/{r}/discovery/{product_id}')
 def detail(r:str,product_id:str,request:Request):
-    auth(r,request); return product_details(product_id)
+    selected=room_channel3_product(r,product_id,request)
+    fresh=product_details(product_id)
+    return enrich_selected_listing(selected,fresh)
+
+@app.post('/api/rooms/{r}/shortlist/restore')
+def restore_shortlist(r:str,request:Request):
+    auth(r,request)
+    with lock:
+        state=load(r)
+        saved=state.get('shortlisted_products') or {}
+        current={product['id'] for product in state.get('discovery',[])}
+        missing=[item for item in state.get('shortlist',[]) if item not in saved and item not in current and item.startswith('channel3:')][:3]
+    restored=[]
+    for item in missing:
+        try:
+            product=product_details(item.removeprefix('channel3:'))
+            if product.get('id')==item:restored.append(product)
+        except HTTPException:
+            continue
+    with lock:
+        state=load(r);saved=state.setdefault('shortlisted_products',{})
+        for product in restored:
+            if product['id'] in state.get('shortlist',[]):saved.setdefault(product['id'],product)
+        if restored:state['revision']+=1;save(r,state)
+        return public_room_state(state)
+
+def room_channel3_product(r,product_id,request):
+    with lock:
+        auth(r,request);state=load(r)
+        product=next((p for p in state.get('discovery',[]) if p.get('provider_id')==product_id and p.get('source','CHANNEL3_LIVE')=='CHANNEL3_LIVE'),None)
+        product=product or next((p for p in (state.get('shortlisted_products') or {}).values() if p.get('provider_id')==product_id and p.get('source','CHANNEL3_LIVE')=='CHANNEL3_LIVE'),None)
+        if not product:
+            bundle=state.get('smart_bundle') or {}
+            for selection in (bundle.get('selected'),bundle.get('saved')):
+                product=next((item['product'] for item in (selection or {}).get('items',[]) if item['product']['id']=='channel3:'+product_id),None)
+                if product:break
+        if not product:raise HTTPException(404,'Product is not in this room')
+        return product
+
+def enrich_selected_listing(selected,fresh):
+    """Use fetched specs only for the same provider product; retain the chosen listing snapshot."""
+    if not isinstance(fresh,dict) or fresh.get('id')!=selected.get('id'):
+        raise HTTPException(502,'Channel3 details did not match the selected listing')
+    result={**fresh,**selected}
+    result['attributes']={**(fresh.get('attributes') or {}),**(selected.get('attributes') or {})}
+    result['key_features']=selected.get('key_features') or fresh.get('key_features') or []
+    result['variants']=selected.get('variants') or fresh.get('variants')
+    result['offers']=selected.get('offers') or []
+    for field in ('id','provider_id','name','brand','provenance','source','category','spatial_eligible','image','retrieved_at'):
+        if selected.get(field) is not None:result[field]=selected[field]
+    return result
+
+def offers_in_selected_market(selected,offers):
+    currency=next((offer.get('currency') for offer in selected.get('offers',[]) if offer.get('currency')),None)
+    return [offer for offer in offers if offer.get('currency')==currency] if currency else list(offers)
+
+@app.get('/api/rooms/{r}/products/{product_id}/seller-lens')
+def seller_lens(r:str,product_id:str,request:Request):
+    selected=room_channel3_product(r,product_id,request)
+    fresh=product_details(product_id)
+    product=enrich_selected_listing(selected,fresh)
+    offers=sorted((o for o in offers_in_selected_market(selected,fresh['offers']) if isinstance(o.get('price_cents'),int)),
+                  key=lambda o:(o['price_cents'],o['retailer']))
+    return {'product':product,'offers':offers,'market_currency':offers[0]['currency'] if offers else None,'lowest_price_cents':offers[0]['price_cents'] if offers else None,
+            'observed_at':product['retrieved_at'],'caveat':'Listed prices exclude unknown delivery, taxes and fees.'}
+
+@app.get('/api/rooms/{r}/products/{product_id}/retailer-link')
+def retailer_link(r:str,product_id:str,retailer:str,request:Request):
+    selected=room_channel3_product(r,product_id,request)
+    actor=auth(r,request)
+    attribution_id=hashlib.sha256((r+'\0'+actor).encode()).hexdigest()[:40]
+    product=enrich_selected_listing(selected,product_details(product_id,user_id=attribution_id))
+    require_checkout_mode(product.get('source',''),CheckoutMode.EXTERNAL_RETAILER)
+    selected_offer=next((o for o in selected.get('offers',[]) if o.get('retailer','').casefold()==retailer.casefold()),None)
+    if not selected_offer:raise HTTPException(404,'Retailer was not part of the selected listing')
+    offer=next((o for o in product['offers'] if o['retailer'].casefold()==retailer.casefold() and o.get('currency')==selected_offer.get('currency') and o.get('url')),
+               None)
+    if not offer:raise HTTPException(404,'Current retailer offer unavailable')
+    return {'checkout_mode':CheckoutMode.EXTERNAL_RETAILER,'url':offer['url'],'price_cents':offer['price_cents'],'currency':offer['currency'],
+            'availability':offer['availability'],'observed_at':product['retrieved_at']}
+
+@app.get('/api/rooms/{r}/channel3/affiliate-activity')
+def affiliate_activity(r:str,request:Request):
+    from urllib.parse import urlencode
+    from .discovery import request as channel3_request
+    actor=auth(r,request)
+    attribution_id=hashlib.sha256((r+'\0'+actor).encode()).hexdigest()[:40]
+    query=urlencode({'user_id':attribution_id,'limit':20})
+    clicks=channel3_request('/v1/reporting/clicks?'+query)
+    transactions=channel3_request('/v1/reporting/transactions?'+query)
+    if not isinstance(clicks,dict) or not isinstance(transactions,dict):
+        raise HTTPException(502,'Channel3 affiliate reporting is unavailable')
+    return {'attribution_id':attribution_id,'clicks':clicks.get('items',[]),'transactions':transactions.get('items',[]),
+            'window':'Channel3 reporting, last 30 days; availability depends on partner access and attribution.'}
+
+@app.get('/api/rooms/{r}/products/{product_id}/price-intelligence')
+def product_price_intelligence(r:str,product_id:str,request:Request):
+    room_channel3_product(r,product_id,request)
+    from .discovery import price_history
+    return price_history(product_id)
 
 @app.get('/api/rooms/{r}/checkout')
 def current_checkout(r:str,request:Request):
@@ -776,72 +2034,15 @@ def current_checkout(r:str,request:Request):
         s=payer(r,request)
         if not s.get('checkout'): return None
         p=payment_load(s['checkout']['id'],r)
-        return {k:p.get(k) for k in ['id','revision','items','total','fees','currency','expires','status','capture']}
+        return {k:p.get(k) for k in ['id','revision','items','total','fees','currency','expires','status','capture',
+                                      'merchant_id','merchant_name','quote_id','reference_total','provider_id','paid_at',
+                                      'authorization_mode','authorization_id','opportunity_id','provisional','preauthorization_available']}
 
 @app.get('/api/rooms/{r}/me')
 def whoami(r:str,request:Request):
     with lock:
         actor=auth(r,request); s=load(r)
         return {'name':actor,'is_payer':actor==s['payer']}
-
-# Ephemeral audio signaling: membership and Origin are checked before joining.
-# Media is exchanged directly between the two browsers, not stored by ShopSide.
-signal_peers={}
-@app.websocket('/api/rooms/{r}/call')
-async def call_signal(ws:WebSocket,r:str):
-    if ws.headers.get('origin')!=WEB_ORIGIN:
-        await ws.close(code=1008); return
-    try: actor=auth(r,ws)
-    except HTTPException:
-        await ws.close(code=1008); return
-    await ws.accept()
-    peers=signal_peers.setdefault(r,{})
-    if actor in peers or len(peers)>=4:
-        await ws.close(code=1008); return
-    peers[actor]=ws
-    async def send_peer(name,payload):
-        peer=peers.get(name)
-        if peer:
-            try: await peer.send_json(payload)
-            except (RuntimeError,WebSocketDisconnect): pass
-    for name in list(peers):
-        if name!=actor:await send_peer(name,{'type':'peer_ready','peer':actor})
-    try:
-        while True:
-            data=await ws.receive_json()
-            if not isinstance(data,dict) or data.get('type') not in ('offer','answer','ice','hangup') or len(json.dumps(data))>32768:
-                await ws.close(code=1008); break
-            target=data.get('to')
-            if target is not None:
-                if not isinstance(target,str) or target==actor or target not in peers:
-                    continue
-                await send_peer(target,{'type':data['type'],'payload':data.get('payload'),'peer':actor})
-            elif len(peers)<=2:
-                # Compatibility with existing two-peer clients.
-                for name in list(peers):
-                    if name!=actor:await send_peer(name,{'type':data['type'],'payload':data.get('payload')})
-            else:
-                await ws.close(code=1008); break
-    except (WebSocketDisconnect,RuntimeError): pass
-    finally:
-        peers.pop(actor,None)
-        for name in list(peers):await send_peer(name,{'type':'peer_left','peer':actor})
-        if not peers: signal_peers.pop(r,None)
-
-@app.get('/api/rooms/{r}/call-config')
-def call_config(r:str,request:Request):
-    auth(r,request)
-    raw=os.getenv('WEBRTC_ICE_SERVERS')
-    if not raw: return {'iceServers':[{'urls':'stun:stun.l.google.com:19302'}]}
-    try:
-        servers=json.loads(raw)
-        if not isinstance(servers,list) or not servers or len(servers)>8: raise ValueError()
-        for server in servers:
-            urls=server.get('urls')
-            if not isinstance(urls,(str,list)) or not urls: raise ValueError()
-            if any(not isinstance(u,str) or not u.startswith(('stun:','stuns:','turn:','turns:')) for u in ([urls] if isinstance(urls,str) else urls)): raise ValueError()
-        return {'iceServers':servers}
-    except (TypeError,ValueError,AttributeError): raise HTTPException(503,'Voice relay configuration is invalid')
 
 class ConciergeTurn(BaseModel):
     text:str=Field(default='',max_length=2000)
@@ -898,7 +2099,9 @@ async def concierge_turn(r:str,body:ConciergeTurn,request:Request):
             current=load(r)
             if current.get('shopping_journey',{})!=prior: raise HTTPException(409,'The shopping conversation changed; retry')
             current['shopping_journey']=journey
-            if results or not question: current['discovery']=results
+            if results or not question:
+                preserve_shortlisted_products(current)
+                current['discovery']=results
             current['commands'].append(body.command_id);current['revision']+=1;save(r,current)
         return {'ok':True}
     finally:
@@ -927,7 +2130,7 @@ async def provider_product_action(r:str,action:str,body:ProviderProductAction,re
             target=body.provider_id
             if body.variant_product_id and body.variant_product_id!=target:
                 original=await asyncio.wait_for(asyncio.to_thread(product_details,target,{}),timeout=15)
-                allowed=any(option.get('name') in body.selected_options and any(value.get('label')==body.selected_options[option['name']] and value.get('product_id')==body.variant_product_id and value.get('exists') is True for value in option.get('values',[])) for option in (original.get('variants') or {}).get('options',[]))
+                allowed=any(option.get('name') in body.selected_options and any(value.get('label')==body.selected_options[option['name']] and value.get('product_id')==body.variant_product_id and value.get('exists') is True and value.get('available')!='OutOfStock' for value in option.get('values',[])) for option in (original.get('variants') or {}).get('options',[]))
                 if not allowed:raise HTTPException(422,'Variant is not available for this product')
                 target=body.variant_product_id
             result=await asyncio.wait_for(asyncio.to_thread(product_details,target,body.selected_options),timeout=25)
@@ -949,8 +2152,410 @@ async def provider_product_action(r:str,action:str,body:ProviderProductAction,re
         if action=='resolve':
             products=[p for p in state['discovery'] if p['id']!=result['id']]
             products.append(result);state['discovery']=products;state['focus']=result['id'];state['spotlight_by']=auth(r,request)
+            bundle=state.get('smart_bundle') or {};selected=bundle.get('selected')
+            if selected and any(item['product']['id']==source for item in selected['items']):
+                from .smart_bundle import normalized_candidates,make_bundle
+                old=next(item for item in selected['items'] if item['product']['id']==source)
+                candidate_slot=normalized_candidates([old['requirement']],[[result]],bundle['currency'])[0]
+                if not candidate_slot['products']:raise HTTPException(422,'Exact variation has no verified available offer')
+                candidate=candidate_slot['products'][0]
+                offer=candidate['offers'][0]
+                replacement={'slot_id':old['slot_id'],'requirement':old['requirement'],'product':candidate,'offer':offer}
+                items=[replacement if item['slot_id']==old['slot_id'] else item for item in selected['items']]
+                updated=make_bundle(items,'custom',bundle['budget_cents'],bundle['currency'],bundle['goal'],
+                    [value for value in (state.get('style_lock') or {}).values() if isinstance(value,str) and value])
+                if updated['remaining_cents']<0:raise HTTPException(422,'Exact variation exceeds the shared bundle budget')
+                slot=next(x for x in bundle['slots'] if x['id']==old['slot_id'])
+                slot['products']=[candidate]+[x for x in slot['products'] if x['id']!=candidate['id']]
+                bundle['version']+=1;updated['version']=bundle['version'];bundle['selected']=updated;bundle['approvals']={}
         else:
             current={p['id']:p for p in state['discovery']}
             current.update({p['id']:p for p in result});state['discovery']=list(current.values())
         state['commands'].append(body.command_id);state['revision']+=1;save(r,state)
     return {'ok':True,'count':len(result) if action in ('similar','cheaper') else None}
+
+# Consented merchant opportunities are separate from checkout and buyer approvals.
+from . import merchant as merchant_service
+from . import merchant_tasks
+from .merchant_agent import OfferProposal
+merchant_service.setup(db)
+
+@app.get('/api/merchant/me')
+def merchant_me(request:Request):
+    merchant_id,_=merchant_service.merchant_auth(db,request)
+    with lock:
+        m=merchant_service.merchant(db,merchant_id)
+        ops=[merchant_service.read(row) for row in db.execute('SELECT state FROM merchant_opportunities WHERE merchant_id=?',(merchant_id,)).fetchall()]
+        orders=[json.loads(row[0]) for row in db.execute('SELECT state FROM merchant_orders WHERE merchant_id=?',(merchant_id,)).fetchall()]
+        orders=[{'id':p['id'],'quote_id':p['quote_id'],'items':p['items'],'total':p['total'],'currency':p['currency'],
+                 'status':p['status'],'paypal_order_id':p.get('provider_id'),'paypal_capture_id':p.get('capture'),
+                 'paypal_authorization_id':p.get('authorization_id'),'paid_at':p.get('paid_at')}
+                for p in orders if p.get('merchant_id')==merchant_id]
+        public_ops=[{key:value for key,value in op.items() if key not in ('room_id','demand_key')} for op in ops]
+        payment_states=[json.loads(row[0]) for row in db.execute('SELECT state FROM payments').fetchall()]
+        for public,op in zip(public_ops,ops):
+            scoped=next((p for p in payment_states if p.get('merchant_id')==merchant_id and
+                (p.get('opportunity_id')==op['id'] or (p.get('quote_id') and p['quote_id']==(op.get('offer') or {}).get('id')))),None)
+            if scoped and scoped.get('authorization_mode')=='PREAUTHORIZED':
+                public['buyer_authorization']={'status':scoped['status'],'maximum_cents':scoped.get('authorized_amount_cents'),
+                    'currency':scoped.get('currency'),'expires_at':scoped.get('authorization_expires'),
+                    'items':[{'sku':item.get('sku'),'product_id':item['product'],'quantity':item['quantity'],'variant':item['variant']} for item in scoped['items']]}
+        return {'merchant':m,'products':merchant_service.product_rows(db,merchant_id),'opportunities':public_ops,'orders':orders,
+            'metrics':{'new_opportunities':sum(o['status']=='MERCHANT_NOTIFIED' for o in ops),
+                'active_negotiations':sum(o['status'] in ('OFFER_PROPOSED','HUMAN_REVIEW','OFFER_PUBLISHED','COUNTERED') for o in ops),
+                'accepted_deals':sum(o['status'] in ('ACCEPTED','ORDER_COMPLETED') for o in ops),
+                'confirmed_orders':sum(o['status']=='paid' for o in orders),
+                'authorized_holds':sum(o['status']=='authorized' and o.get('paypal_authorization_id') for o in orders),
+                'settlement_fallbacks':sum(o['status']=='buyer_approval_required' for o in orders),
+                'sandbox_revenue_cents':sum(o['total'] for o in orders if o['status']=='paid')}}
+
+@app.post('/api/merchant/config')
+def merchant_config(body:merchant_service.MerchantPolicyUpdate,request:Request):
+    merchant_id,actor=merchant_service.merchant_auth(db,request)
+    with lock:
+        m=merchant_service.merchant(db,merchant_id)
+        changes=body.model_dump(exclude_unset=True)
+        if any(value is None for value in changes.values()):raise HTTPException(422,'Policy fields cannot be null')
+        for field in ('name','agent_name','opt_in','active','mode'):
+            if field in changes:m[field]=changes.pop(field)
+        m['policy'].update(changes)
+        m.setdefault('activity',[]).append({'event':'policy_updated','actor':actor,'at':merchant_service.now()})
+        merchant_service.put(db,'merchants',merchant_id,m)
+        return m
+
+@app.get('/api/merchant/products/search')
+def merchant_product_search(request:Request,query:str):
+    merchant_id,_=merchant_service.merchant_auth(db,request)
+    if not query.strip() or len(query)>100:raise HTTPException(422,'Enter a short product search')
+    # Public catalog search, bounded and attributed. The merchant connects a specific retailer domain.
+    return {'products':search_products(query)[:8],'merchant_id':merchant_id}
+
+@app.post('/api/merchant/products/refresh')
+def merchant_refresh_products(request:Request):
+    merchant_id,_=merchant_service.merchant_auth(db,request)
+    refreshed=[]
+    with lock:
+        for mapping in merchant_service.product_rows(db,merchant_id)[:20]:
+            current=merchant_service.current_product(mapping)
+            db.execute('UPDATE merchant_products SET state=? WHERE merchant_id=? AND product_id=?',
+                (json.dumps(current),merchant_id,mapping['product_id']))
+            refreshed.append(current)
+        db.commit()
+    return {'products':refreshed}
+
+@app.post('/api/merchant/products')
+def merchant_connect_product(body:merchant_service.ConnectProduct,request:Request):
+    merchant_id,_=merchant_service.merchant_auth(db,request)
+    with lock:
+        product=product_details(body.product_id.removeprefix('channel3:'))
+        allowed=merchant_service.merchant(db,merchant_id).get('verified_domain')
+        if not allowed or allowed.lower()!=body.domain.lower():raise HTTPException(403,'Merchant domain must be verified by the operator')
+        offer=next((o for o in product['offers'] if o.get('retailer','').lower()==body.domain.lower()),None)
+        if not offer:raise HTTPException(422,'This Channel3 product has no offer from that domain')
+        # Connecting a public listing does not authorize selling it. Sandbox merchants may
+        # connect references as evidence, but quotes still require explicit merchant policy.
+        mapping={'merchant_id':merchant_id,'product_id':body.product_id,'source':'CHANNEL3_LIVE','domain':body.domain.lower(),
+            'category':body.category,'verified_at':merchant_service.now(),'status':'current',
+            'observed':{'name':product['name'],'price_cents':offer['price_cents'],'currency':offer['currency'],
+                'availability':offer['availability'],'url':offer['url'],'retrieved_at':product['retrieved_at']}}
+        db.execute('INSERT INTO merchant_products VALUES(?,?,?) ON CONFLICT(merchant_id,product_id) DO UPDATE SET state=excluded.state',
+            (merchant_id,body.product_id,json.dumps(mapping)));db.commit()
+        return mapping
+
+class SellerConsent(BaseModel):
+    enabled:bool
+    command_id:str=Field(min_length=8,max_length=100)
+    auto_accept_limit_cents:int|None=Field(default=None,ge=0,le=100000000)
+    duration_seconds:int=Field(default=3600,ge=3600,le=172800,strict=True)
+    merchant_id:str|None=Field(default=None,min_length=1,max_length=100)
+    quantity:int=Field(default=1,ge=1,le=10,strict=True)
+    shipping_max_cents:int=Field(default=0,ge=0,le=0,strict=True)
+    tax_max_cents:int=Field(default=0,ge=0,le=0,strict=True)
+    require_human_approval:bool=False
+    negotiation_preference:str=Field(default='best_price',pattern='^(best_price|fast_reply)$')
+    linked_watch_id:str|None=Field(default=None,max_length=100)
+    payment_mode:str=Field(default='NEGOTIATE_FIRST',pattern='^(NEGOTIATE_FIRST|PREAUTHORIZED)$')
+
+@app.get('/api/rooms/{r}/deal-rescue/merchants')
+def deal_rescue_merchants(r:str,request:Request):
+    with lock:
+        auth(r,request)
+        sellers=[]
+        for row in db.execute('SELECT state FROM merchants').fetchall():
+            seller=merchant_service.read(row)
+            if seller and seller.get('sandbox') and seller.get('active') and seller.get('opt_in'):
+                sellers.append({'id':seller['id'],'name':seller['name']})
+        return {'merchants':sorted(sellers,key=lambda seller:seller['name'].casefold())}
+
+@app.get('/api/rooms/{r}/deal-rescue')
+def deal_rescue_progress(r:str,request:Request):
+    """Show room members the current seller progress without private merchant policy."""
+    labels={'CREATED':'Negotiating','MATCHING':'Negotiating','MERCHANT_NOTIFIED':'Awaiting merchant',
+            'OFFER_PROPOSED':'Negotiating','HUMAN_REVIEW':'Awaiting seller review',
+            'OFFER_PUBLISHED':'Offer available','COUNTERED':'Awaiting merchant',
+            'ACCEPTED':'Awaiting buyer payment approval','ORDER_COMPLETED':'Captured',
+            'DECLINED':'Rejected','EXPIRED':'Expired','CANCELLED':'Cancelled'}
+    with lock:
+        auth(r,request)
+        state=load(r);consent=state.get('seller_offers') or {}
+        demand_key=consent.get('demand_key')
+        if not consent.get('enabled') or not demand_key:
+            return {'enabled':False,'payment_mode':'NEGOTIATE_FIRST','opportunities':[]}
+        rows=db.execute('SELECT state FROM merchant_opportunities WHERE room_id=? AND demand_key=?',(r,demand_key)).fetchall()
+        opportunities=[]
+        for row in rows:
+            op=merchant_service.read(row)
+            if not op:continue
+            status=op.get('status','CREATED')
+            if op.get('demand',{}).get('expires_at',0)<=merchant_service.now() and status not in merchant_service.TERMINAL:status='EXPIRED'
+            if status=='ACCEPTED' and (op.get('offer') or {}).get('expires_at',0)<=merchant_service.now():status='EXPIRED'
+            seller=merchant_service.merchant(db,op['merchant_id'])
+            try: authorized_payees=json.loads(os.getenv('PAYPAL_MERCHANT_IDS_JSON','{}'))
+            except ValueError:authorized_payees={}
+            opportunities.append({'id':op['id'],'merchant_id':op['merchant_id'],'merchant_name':seller['name'],'status':status,
+                'preauthorization_available':bool(authorized_payees.get(op['merchant_id'])) if isinstance(authorized_payees,dict) else False,
+                'label':labels.get(status,'Negotiating'),'created_at':op.get('created_at'),
+                'expires_at':op.get('demand',{}).get('expires_at')})
+        payments=[json.loads(row[0]) for row in db.execute('SELECT state FROM payments WHERE room=?',(r,)).fetchall()]
+        preauthorized=any(p.get('status') in ('approval','authorizing','authorized','capture_pending') and p.get('authorization_mode')=='PREAUTHORIZED' and p.get('demand_key',demand_key)==demand_key for p in payments)
+        return {'enabled':True,'payment_mode':'PREAUTHORIZED' if preauthorized else consent.get('payment_mode','NEGOTIATE_FIRST'),'expires_at':consent.get('expires_at'),
+                'opportunities':sorted(opportunities,key=lambda op:(op['created_at'] or 0,op['id']))}
+
+@app.post('/api/rooms/{r}/seller-offers/consent')
+def seller_consent(r:str,body:SellerConsent,request:Request):
+    with lock:
+        actor=auth(r,request);s=load(r)
+        if actor!=s['payer']:raise HTTPException(403,'Only the room creator controls seller offers')
+        existing=s.get('seller_offers') or {}
+        if body.command_id in s.get('commands',[]):return public_room_state(s)
+        if body.enabled:
+            if body.payment_mode=='PREAUTHORIZED' and not (body.merchant_id or existing.get('merchant_id')):
+                raise HTTPException(422,'Choose one merchant for preauthorized Deal Rescue')
+            if body.linked_watch_id:
+                watch=db.execute('SELECT id FROM channel3_watches WHERE id=? AND room=? AND status=?',
+                    (body.linked_watch_id,r,'active')).fetchone()
+                if not watch:raise HTTPException(422,'Linked Price Watch is not active in this room')
+            if existing.get('enabled'):
+                if 'merchant_id' in body.model_fields_set and body.merchant_id!=existing.get('merchant_id'):
+                    raise HTTPException(409,'Turn off seller offers before changing the merchant scope')
+                if 'auto_accept_limit_cents' not in body.model_fields_set:return public_room_state(s)
+                existing['auto_accept_limit_cents']=body.auto_accept_limit_cents
+            else:
+                if body.merchant_id:
+                    selected=merchant_service.merchant(db,body.merchant_id)
+                    if not selected.get('sandbox') or not selected.get('active') or not selected.get('opt_in'):
+                        raise HTTPException(409,'Selected merchant is not available for Deal Rescue')
+                s['seller_offers']={'enabled':True,'demand_key':secrets.token_urlsafe(12),'expires_at':merchant_service.now()+body.duration_seconds,
+                    'status':'waiting','auto_accept_limit_cents':body.auto_accept_limit_cents,'merchant_id':body.merchant_id,
+                    'quantity':body.quantity,'shipping_max_cents':0,'tax_max_cents':0,
+                    'require_human_approval':body.require_human_approval,'negotiation_preference':body.negotiation_preference,
+                    'linked_watch_id':body.linked_watch_id,'payment_mode':body.payment_mode}
+            policy=s['seller_offers']
+            history=s.setdefault('seller_policy_history',[])
+            history.append({'version':len(history)+1,'actor':actor,'created_at':merchant_service.now(),
+                'expires_at':policy['expires_at'],'enabled':True,'auto_accept_limit_cents':policy.get('auto_accept_limit_cents'),
+                'scope':'sandbox_merchant_quotes','merchant_id':policy.get('merchant_id'),'payment_authorized':False,
+                'quantity':policy.get('quantity',1),'shipping_max_cents':0,'tax_max_cents':0,
+                'require_human_approval':policy.get('require_human_approval',False),
+                'negotiation_preference':policy.get('negotiation_preference','best_price'),'linked_watch_id':policy.get('linked_watch_id'),
+                'payment_mode':policy.get('payment_mode','NEGOTIATE_FIRST')})
+            policy['policy_version']=len(history)
+        else:
+            history=s.setdefault('seller_policy_history',[])
+            history.append({'version':len(history)+1,'actor':actor,'created_at':merchant_service.now(),
+                'enabled':False,'scope':'sandbox_merchant_quotes','payment_authorized':False})
+            s['seller_offers']={'enabled':False,'status':'off'}
+            s.pop('seller_agent',None)
+            for offer in s.get('flash_offers',[]):
+                if offer['status'] not in ('ACCEPTED','DECLINED','EXPIRED'):offer['status']='CANCELLED'
+            for row in db.execute('SELECT state FROM merchant_opportunities WHERE room_id=?',(r,)).fetchall():
+                op=merchant_service.read(row)
+                if op['status'] not in merchant_service.TERMINAL:
+                    op['status']='CANCELLED';merchant_service.audit(op,'buyer_consent_revoked',actor);merchant_service.save_op(db,op)
+        s.setdefault('commands',[]).append(body.command_id);s['revision']+=1;save(r,s)
+        if not body.enabled and merchant_tasks.configured():
+            merchant_tasks.enqueue('paypal-consent-revoked-'+r+'-'+body.command_id,path='/api/internal/paypal-authorizations/expire')
+        return public_room_state(s)
+
+def dispatch_merchant_jobs(ids,background_tasks):
+    for job_id in ids:
+        if merchant_tasks.configured():merchant_tasks.enqueue(job_id)
+        else:background_tasks.add_task(run_merchant_jobs,job_id)
+
+@app.post('/api/rooms/{r}/seller-offers/request')
+def request_seller_offers(r:str,request:Request,background_tasks:BackgroundTasks):
+    with lock:
+        actor=auth(r,request);s=load(r)
+        if actor!=s['payer']:raise HTTPException(403,'Only the room creator can request seller offers')
+        if not s.get('seller_offers',{}).get('enabled'):raise HTTPException(409,'Enable seller offers first')
+        ids=merchant_service.match(db,r,s,notify)
+        s['seller_offers']['status']='matched' if ids else 'waiting'
+        s['seller_offers']['match_count']=len(ids);s['revision']+=1;save(r,s)
+        result={'opportunity_count':len(ids),'status':s['seller_offers']['status']}
+    dispatch_merchant_jobs(ids,background_tasks)
+    return result
+
+@app.post('/api/merchant/opportunities/{op_id}/action')
+async def merchant_opportunity_action(op_id:str,body:merchant_service.DealRequest,request:Request):
+    merchant_id,actor=merchant_service.merchant_auth(db,request)
+    with lock:
+        op=merchant_service.scoped_opportunity(db,merchant_id,op_id);m=merchant_service.merchant(db,merchant_id)
+        if body.command_id in op.get('commands',[]):return {'opportunity':op,'duplicate':True}
+        if op['status'] in merchant_service.TERMINAL:raise HTTPException(409,'Opportunity closed')
+        if body.action in ('decline','close','reject'):
+            op['status']='DECLINED' if body.action!='reject' else 'OFFER_PROPOSED';op.pop('pending',None)
+            merchant_service.audit(op,body.action,actor);op.setdefault('commands',[]).append(body.command_id);merchant_service.save_op(db,op)
+            if op['status']=='DECLINED' and merchant_tasks.configured():
+                merchant_tasks.enqueue('paypal-merchant-declined-'+op_id+'-'+body.command_id,path='/api/internal/paypal-authorizations/expire')
+            return {'opportunity':op}
+        if body.action=='approve':
+            if op['status']!='HUMAN_REVIEW' or not op.get('pending'):raise HTTPException(409,'No proposal requires review')
+            pending=op['pending'];proposal=OfferProposal(product_id=pending['product_id'],price_cents=pending['price_cents'],explanation=pending['explanation'])
+            s=load(op['room_id']);result=merchant_service.publish(db,s,op,m,proposal,actor,notify,human=True)
+            merchant_service.audit(op,'human_approved',actor);merchant_service.save_op(db,op);s['revision']+=1;save(op['room_id'],s)
+            if result.get('quote'):schedule_authorized_settlements(op['room_id'],result['quote'])
+            if result.get('quote',{}).get('counter_job_id') and merchant_tasks.configured():merchant_tasks.enqueue(result['quote']['counter_job_id'])
+            return result
+        if body.action!='generate':raise HTTPException(422,'Unknown action')
+        if not m['opt_in'] or not m['active']:raise HTTPException(409,'Merchant agent is paused or opted out')
+        products=[p for p in merchant_service.product_rows(db,merchant_id) if p['product_id'] in (op.get('product_ids') or [op['product_id']])]
+        if not products:raise HTTPException(409,'Merchant product mapping missing')
+    if body.price_cents is None:
+        try:proposal,trace=await merchant_service.propose(m,{'id':op['id'],**op['demand'],
+            'product_ids':op.get('product_ids') or [op['product_id']],'reference_total_cents':op.get('reference_total_cents'),
+            'counter_price_cents':op.get('counter_price_cents')},products,merchant_service.market_context(products))
+        except Exception as exc:raise HTTPException(503,'Merchant AI unavailable; submit a manual proposal') from exc
+    else:
+        proposal=OfferProposal(product_id=op['product_id'],price_cents=body.price_cents,explanation=body.explanation or 'A merchant proposal for your shopping goal.')
+        trace={'model_calls':0,'tools':[],'outcome':'merchant_proposed'}
+    with lock:
+        op=merchant_service.scoped_opportunity(db,merchant_id,op_id);m=merchant_service.merchant(db,merchant_id)
+        s=load(op['room_id']);result=merchant_service.publish(db,s,op,m,proposal,actor,notify)
+        op['agent_trace']=trace;op.setdefault('agent_traces',[]).append({'at':merchant_service.now(),'actor':actor,**trace});op.setdefault('commands',[]).append(body.command_id);merchant_service.save_op(db,op)
+        if result.get('quote'):s['revision']+=1;save(op['room_id'],s)
+        if result.get('quote'):schedule_authorized_settlements(op['room_id'],result['quote'])
+        if result.get('quote',{}).get('counter_job_id') and merchant_tasks.configured():merchant_tasks.enqueue(result['quote']['counter_job_id'])
+        return result
+
+@app.post('/api/rooms/{r}/seller-offers/action')
+def buyer_deal_action(r:str,body:merchant_service.BuyerDealAction,request:Request,background_tasks:BackgroundTasks):
+    with lock:
+        actor=auth(r,request);s=load(r)
+        if body.command_id in s.get('commands',[]):return public_room_state(s)
+        if actor!=s['payer'] and body.action in ('invite','remove'):raise HTTPException(403,'Only the room creator controls seller invitations')
+        quote=next((x for x in s.get('flash_offers',[]) if x['id']==body.offer_id),None)
+        if not quote:raise HTTPException(404,'Offer not found')
+        op=merchant_service.scoped_opportunity(db,quote['merchant_id'],quote['opportunity_id'])
+        if body.action=='remove':
+            s.pop('seller_agent',None)
+            s.setdefault('commands',[]).append(body.command_id);s['revision']+=1;save(r,s)
+            return public_room_state(s)
+        if not s.get('seller_offers',{}).get('enabled') or s['seller_offers']['demand_key']!=op['demand_key']:
+            raise HTTPException(409,'Buyer consent revoked')
+        if quote['expires_at']<=merchant_service.now():
+            quote['status']='EXPIRED';op['status']='EXPIRED';merchant_service.save_op(db,op);save(r,s)
+            raise HTTPException(409,'Offer expired')
+        if body.action=='invite':
+            s['seller_agent']={'merchant_id':quote['merchant_id'],'name':quote['agent_name'],'opportunity_id':op['id'],'invited_by':actor,'since':merchant_service.now()}
+        elif quote['status'] not in ('OFFER_PUBLISHED','COUNTERED'):raise HTTPException(409,'Offer is no longer active')
+        elif body.action=='accept':
+            quote['status']='ACCEPTED';op['status']='ACCEPTED';merchant_service.audit(op,'accepted',actor)
+        elif body.action=='dismiss':
+            quote['status']='DECLINED';op['status']='DECLINED';merchant_service.audit(op,'dismissed',actor)
+            if merchant_tasks.configured():
+                merchant_tasks.enqueue('paypal-buyer-dismissed-'+op['id']+'-'+body.command_id,path='/api/internal/paypal-authorizations/expire')
+        elif body.action=='counter':
+            m=merchant_service.merchant(db,quote['merchant_id'])
+            if op['counter_count']>=m['policy']['max_counteroffers']:raise HTTPException(409,'Counteroffer limit reached')
+            if body.price_cents is None:raise HTTPException(422,'Counteroffer price required')
+            if body.price_cents>op['demand']['budget_cents']:
+                raise HTTPException(422,'Counteroffer exceeds the shared shopping budget')
+            op['counter_count']+=1;op['status']='COUNTERED';quote['status']='COUNTERED'
+            op['counter_price_cents']=body.price_cents;merchant_service.audit(op,'countered',actor,price_cents=body.price_cents)
+            job_id=op['id']+'-counter-'+str(op['counter_count'])
+            merchant_service.put(db,'merchant_jobs',job_id,{'id':job_id,'opportunity_id':op['id'],'status':'pending','attempts':0,'next_at':merchant_service.now()})
+        if op.get('offer',{}).get('id')==quote['id']:op['offer']=quote
+        op.setdefault('commands',[]).append(body.command_id);merchant_service.save_op(db,op)
+        s.setdefault('commands',[]).append(body.command_id);s['revision']+=1;save(r,s)
+        if body.action=='accept':schedule_authorized_settlements(r,quote)
+        result=public_room_state(s)
+    if body.action=='counter':dispatch_merchant_jobs([job_id],background_tasks)
+    return result
+
+@app.post('/api/internal/merchant-jobs/process')
+async def process_merchant_jobs(request:Request):
+    """Compatibility endpoint for protected periodic recovery."""
+    secret=os.getenv('MERCHANT_JOB_TOKEN')
+    if not secret or not secrets.compare_digest(request.headers.get('x-merchant-job-token',''),secret):raise HTTPException(403,'Job token required')
+    return await run_merchant_jobs()
+
+@app.post('/api/internal/merchant-jobs/{job_id}/process')
+async def process_merchant_task(job_id:str,request:Request):
+    secret=os.getenv('MERCHANT_JOB_TOKEN')
+    local_auth=not merchant_tasks.configured() and secret and secrets.compare_digest(request.headers.get('x-merchant-job-token',''),secret)
+    if not local_auth and not merchant_tasks.verify(request):raise HTTPException(403,'Task identity required')
+    result=await run_merchant_jobs(job_id)
+    row=db.execute('SELECT state FROM merchant_jobs WHERE id=?',(job_id,)).fetchone()
+    if not row:raise HTTPException(404,'Job not found')
+    if merchant_service.read(row)['status']=='pending':raise HTTPException(503,'Merchant job queued for retry')
+    return result
+
+async def run_merchant_jobs(job_id=None):
+    results=[]
+    with lock:
+        candidates=[merchant_service.read(row) for row in db.execute('SELECT state FROM merchant_jobs').fetchall()]
+        candidates=[job for job in candidates if (job_id is None or job['id']==job_id) and job['status'] in ('pending','running') and job['next_at']<=merchant_service.now()][:10]
+    for candidate in candidates:
+        with lock:
+            row=db.execute('SELECT state FROM merchant_jobs WHERE id=?',(candidate['id'],)).fetchone()
+            job=merchant_service.read(row)
+            if not job or job['status'] not in ('pending','running') or job['next_at']>merchant_service.now():continue
+            op_row=db.execute('SELECT state FROM merchant_opportunities WHERE id=?',(job['opportunity_id'],)).fetchone()
+            op=merchant_service.read(op_row)
+            if not op or op['status'] in merchant_service.TERMINAL or op['demand']['expires_at']<=merchant_service.now():
+                job['status']='done';merchant_service.put(db,'merchant_jobs',job['id'],job)
+                if op and op['status'] not in merchant_service.TERMINAL:
+                    op['status']='EXPIRED';merchant_service.save_op(db,op)
+                continue
+            if op.get('offer') and op['status']=='OFFER_PUBLISHED':
+                room=load(op['room_id'])
+                if not any(offer['id']==op['offer']['id'] for offer in room.get('flash_offers',[])):
+                    room.setdefault('flash_offers',[]).append(op['offer'])
+                    room['revision']+=1;save(op['room_id'],room)
+                job['status']='done';merchant_service.put(db,'merchant_jobs',job['id'],job)
+                results.append({'id':op['id'],'status':'published'})
+                continue
+            m=merchant_service.merchant(db,op['merchant_id'])
+            products=[p for p in merchant_service.product_rows(db,m['id']) if p['product_id'] in (op.get('product_ids') or [op['product_id']])]
+            if not m['opt_in'] or not m['active'] or not products:
+                job['status']='done';merchant_service.put(db,'merchant_jobs',job['id'],job)
+                continue
+            if m['mode']!='automatic' or m['policy']['minimum_price_cents'] is None:
+                job['status']='done';merchant_service.put(db,'merchant_jobs',job['id'],job)
+                results.append({'id':op['id'],'status':'merchant_review'})
+                continue
+            job['status']='running';job['attempts']+=1;job['next_at']=merchant_service.now()+90
+            claimed=db.execute('UPDATE merchant_jobs SET state=? WHERE id=? AND state=?',
+                (json.dumps(job),job['id'],row[0]))
+            db.commit()
+            if claimed.rowcount!=1:continue
+        try:
+            proposal,trace=await merchant_service.propose(m,{'id':op['id'],**op['demand'],
+                'product_ids':op.get('product_ids') or [op['product_id']],'reference_total_cents':op.get('reference_total_cents'),
+                'counter_price_cents':op.get('counter_price_cents')},products,merchant_service.market_context(products))
+            with lock:
+                fresh=merchant_service.scoped_opportunity(db,m['id'],op['id']);room=load(fresh['room_id'])
+                outcome=merchant_service.publish(db,room,fresh,merchant_service.merchant(db,m['id']),proposal,'merchant_ai',notify)
+                fresh['agent_trace']=trace;fresh.setdefault('agent_traces',[]).append({'at':merchant_service.now(),'actor':'merchant_ai',**trace});merchant_service.save_op(db,fresh)
+                if outcome.get('quote'):room['revision']+=1;save(fresh['room_id'],room)
+                if outcome.get('quote'):schedule_authorized_settlements(fresh['room_id'],outcome['quote'])
+                if outcome.get('quote',{}).get('counter_job_id') and merchant_tasks.configured():merchant_tasks.enqueue(outcome['quote']['counter_job_id'])
+                job['status']='done';merchant_service.put(db,'merchant_jobs',job['id'],job)
+                results.append({'id':op['id'],'status':'published' if outcome.get('quote') else 'human_review'})
+        except Exception:
+            with lock:
+                job['status']='pending' if job['attempts']<3 else 'failed'
+                job['next_at']=merchant_service.now()+min(60*(2**job['attempts']),3600)
+                merchant_service.put(db,'merchant_jobs',job['id'],job)
+                results.append({'id':op['id'],'status':job['status']})
+    return {'results':results}

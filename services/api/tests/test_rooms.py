@@ -56,6 +56,26 @@ def test_verified_capture_and_pending_recovery(monkeypatch):
     assert len([c for c in calls if c[1].endswith('/capture')])==1
     assert a.get(base).json()['checkout']['status']=='paid'
 
+def test_direct_sandbox_order_receipt_uses_verified_capture_and_variant(monkeypatch):
+    import app.main as main
+    import pytest
+    from starlette.requests import Request
+    payment={'id':'local-order','room':'room','payer':'A','status':'paid','capture':'capture-1','provider_id':'paypal-order',
+             'verified_at':'2026-11-08T12:00:00+00:00','total':7800,'currency':'USD',
+             'items':[{'product':'11','name':'Lamp','variant':'midnight','quantity':2,'price':3900}]}
+    monkeypatch.setattr(main,'auth',lambda *_:'A')
+    monkeypatch.setattr(main,'load',lambda _:{'people':['A','B']})
+    monkeypatch.setattr(main,'payment_load',lambda *_:payment)
+    monkeypatch.setattr(main.db,'execute',lambda *_:type('Rows',(),{'fetchall':lambda self:[]})())
+    request=Request({'type':'http','method':'GET','path':'/','headers':[], 'query_string':b'', 'server':('test',80), 'client':('test',1), 'scheme':'http'})
+    receipt=main.merchant_order_receipt('room','local-order',request)
+    assert receipt['merchant_name']=='ShopSide sandbox catalog'
+    assert receipt['total_cents']==receipt['reference_total_cents']==7800 and receipt['savings_cents']==0
+    assert receipt['items'][0]['variant']=='midnight' and receipt['paypal_sandbox_capture_id']=='capture-1'
+    assert receipt['paid_at']==payment['verified_at']
+    payment['status']='approval'
+    with pytest.raises(main.HTTPException):main.merchant_order_receipt('room','local-order',request)
+
 def test_discovery_shared_and_external_offer_cannot_charge(monkeypatch):
     import app.main as main
     from app.discovery import normalize
@@ -72,6 +92,72 @@ def test_discovery_shared_and_external_offer_cannot_charge(monkeypatch):
     assert a.post(base+'/commands',json={'command_id':'external','revision':rev,'kind':'cart','value':item['id']}).status_code==422
     assert a.post(base+'/commands',json={'command_id':'spotlight','revision':rev,'kind':'focus','value':item['id']}).status_code==200
     assert b.get(base).json()['focus']==item['id']
+
+def test_saved_channel3_products_survive_a_new_market_discovery(monkeypatch):
+    import app.main as main
+    saved=[
+        {'id':'channel3:chair-one','provider_id':'chair-one','name':'Chair One','provenance':'channel3','offers':[]},
+        {'id':'channel3:chair-two','provider_id':'chair-two','name':'Chair Two','provenance':'channel3','offers':[]},
+    ]
+    newer={'id':'channel3:uk-chair','provider_id':'uk-chair','name':'UK Chair','provenance':'channel3','offers':[]}
+    monkeypatch.setattr(main,'search_products',lambda query,max_price=None: saved if query=='chairs' else [newer])
+    client=TestClient(app)
+    created=client.post('/api/rooms',json={'name':'A'}).json();base='/api/rooms/'+created['room']['id']
+    assert client.post(base+'/discovery',json={'query':'chairs'}).status_code==200
+    for product in saved:
+        state=client.get(base).json()
+        assert client.post(base+'/commands',json={'kind':'shortlist','value':product['id'],'revision':state['revision'],'command_id':'save-'+product['id']}).status_code==200
+    # Emulate a room created before product snapshots were persisted.
+    with main.lock:
+        legacy=main.load(created['room']['id']);legacy.pop('shortlisted_products',None);main.save(created['room']['id'],legacy)
+    assert client.post(base+'/discovery',json={'query':'UK chairs'}).status_code==200
+    state=client.get(base).json()
+    assert state['shortlist']==[product['id'] for product in saved]
+    assert [state['shortlisted_products'][product['id']]['name'] for product in saved]==['Chair One','Chair Two']
+    compare=','.join(state['shortlist'])
+    assert client.post(base+'/commands',json={'kind':'compare','value':compare,'revision':state['revision'],'command_id':'compare-old-market'}).status_code==200
+    state=client.get(base).json()
+    assert state['comparison']==[product['id'] for product in saved]
+    assert client.post(base+'/commands',json={'kind':'shortlist','value':saved[0]['id'],'revision':state['revision'],'command_id':'remove-old-market'}).status_code==200
+    state=client.get(base).json()
+    assert state['shortlist']==[saved[1]['id']]
+    assert saved[0]['id'] not in state['shortlisted_products']
+
+def test_legacy_shortlist_is_snapshotted_before_discovery_is_replaced():
+    import app.main as main
+    product={'id':'channel3:legacy-chair','name':'Saved chair'}
+    state={'shortlist':[product['id']],'discovery':[product]}
+    main.preserve_shortlisted_products(state)
+    assert state['shortlisted_products']=={product['id']:product}
+
+def test_legacy_shortlist_recovers_channel3_products_after_the_old_search_is_gone(monkeypatch):
+    import app.main as main
+    old={'id':'channel3:chair-one','provider_id':'chair-one','name':'Saved chair','provenance':'channel3','offers':[]}
+    room={'id':'room','people':['A'],'payer':'A','revision':0,'shortlist':[old['id']],
+          'discovery':[{'id':'channel3:uk-chair','name':'Current UK result'}],'commands':[]}
+    monkeypatch.setattr(main,'auth',lambda *_:'A')
+    monkeypatch.setattr(main,'load',lambda _r:room)
+    monkeypatch.setattr(main,'product_details',lambda provider_id:old if provider_id=='chair-one' else None)
+    monkeypatch.setattr(main,'save',lambda _r,state:room.update(state))
+    from starlette.requests import Request
+    request=Request({'type':'http','method':'POST','path':'/','headers':[], 'query_string':b'', 'server':('test',80), 'client':('test',1), 'scheme':'http'})
+    result=main.restore_shortlist('room',request)
+    assert result['shortlisted_products'][old['id']]['name']=='Saved chair'
+
+def test_product_detail_enrichment_preserves_the_selected_listing_and_offer():
+    import app.main as main
+    import pytest
+    selected={'id':'channel3:chair','provider_id':'chair','name':'Debenhams chair','provenance':'channel3',
+        'offers':[{'retailer':'Debenhams','price_cents':8742,'currency':'GBP','url':'https://debenhams.example/chair'}],
+        'attributes':{},'key_features':[]}
+    fresh={'id':'channel3:chair','name':'Alternate title','offers':[{'retailer':'Best Buy','price_cents':13499,'currency':'USD'}],
+        'attributes':{'material':'mesh'},'key_features':['Adjustable lumbar']}
+    result=main.enrich_selected_listing(selected,fresh)
+    assert result['name']=='Debenhams chair'
+    assert result['offers']==selected['offers']
+    assert result['attributes']=={'material':'mesh'}
+    assert main.offers_in_selected_market(selected,[{'currency':'USD','price_cents':100},{'currency':'GBP','price_cents':8742}])==[{'currency':'GBP','price_cents':8742}]
+    with pytest.raises(main.HTTPException):main.enrich_selected_listing(selected,{**fresh,'id':'channel3:other-chair'})
 
 def test_missing_discovery_key_is_explicit(monkeypatch):
     monkeypatch.delenv('CHANNEL3_API_KEY',raising=False)
@@ -127,6 +213,9 @@ def test_adk_coordinates_real_room_tool_with_test_runner(monkeypatch):
     import app.main as main
     monkeypatch.setenv('GEMINI_API_KEY','test-key')
     monkeypatch.setenv('GEMINI_MODEL','test-model')
+    monkeypatch.setattr(main,'configured_client',lambda:object())
+    import google.adk.models.google_llm
+    monkeypatch.setattr(google.adk.models.google_llm,'Gemini',lambda **kwargs:'mock-gemini')
     seen={}
     class Sessions:
         async def create_session(self,**kwargs): return SimpleNamespace(id='test-session')
@@ -167,21 +256,6 @@ def test_express_mode_ignores_ambient_project(monkeypatch):
     monkeypatch.delenv('VERTEX_API_KEY',raising=False)
     monkeypatch.setattr(config.genai,'Client',lambda **kwargs:kwargs)
     assert config.configured_client()=={'vertexai':True,'api_key':'test-express-key'}
-
-def test_voice_signaling_only_between_authorized_room_members():
-    from starlette.websockets import WebSocketDisconnect
-    a,b,c=TestClient(app),TestClient(app),TestClient(app)
-    result=a.post('/api/rooms',json={'name':'A'}).json();r=result['room']['id'];b.post('/api/join/'+result['invite'],json={'name':'B'})
-    import pytest
-    with pytest.raises(WebSocketDisconnect):
-        with c.websocket_connect('/api/rooms/'+r+'/call',headers={'origin':'http://localhost:3000'}):pass
-    with a.websocket_connect('/api/rooms/'+r+'/call',headers={'origin':'http://localhost:3000'}) as first:
-        with b.websocket_connect('/api/rooms/'+r+'/call',headers={'origin':'http://localhost:3000'}) as second:
-            assert first.receive_json()['type']=='peer_ready'
-            first.send_json({'type':'offer','payload':{'sdp':'test'}})
-            assert second.receive_json()=={'type':'offer','payload':{'sdp':'test'}}
-            second.send_json({'type':'answer','payload':{'sdp':'reply'}})
-            assert first.receive_json()=={'type':'answer','payload':{'sdp':'reply'}}
 
 def test_quote_rolls_back_stock_and_payment_when_save_fails(monkeypatch):
     import app.main as main
@@ -243,23 +317,6 @@ def test_retailer_cart_survives_new_search_and_sample_quote_excludes_it(monkeypa
     assert quote['total']==8900
     assert len(quote['items'])==1 and quote['items'][0]['product']=='0'
 
-def test_family_voice_signaling_targets_only_intended_member():
-    from contextlib import ExitStack
-    members=[TestClient(app) for _ in range(4)]
-    created=members[0].post('/api/rooms',json={'name':'A'}).json();r=created['room']['id']
-    for index,name in enumerate(['B','C','D'],1):assert members[index].post('/api/join/'+created['invite'],json={'name':name}).status_code==200
-    with ExitStack() as stack:
-        sockets=[]
-        for client in members:
-            sockets.append(stack.enter_context(client.websocket_connect('/api/rooms/'+r+'/call',headers={'origin':'http://localhost:3000'})))
-        assert [sockets[0].receive_json()['peer'] for _ in range(3)]==['B','C','D']
-        assert [sockets[1].receive_json()['peer'] for _ in range(2)]==['C','D']
-        assert sockets[2].receive_json()['peer']=='D'
-        sockets[0].send_json({'type':'offer','to':'D','payload':{'sdp':'private'}})
-        assert sockets[3].receive_json()=={'type':'offer','payload':{'sdp':'private'},'peer':'A'}
-        sockets[3].send_json({'type':'answer','to':'A','payload':{'sdp':'reply'}})
-        assert sockets[0].receive_json()=={'type':'answer','payload':{'sdp':'reply'},'peer':'D'}
-
 def test_tab_scoped_memberships_survive_shared_browser_cookies():
     client=TestClient(app)
     first='a'*32;second='b'*32
@@ -293,13 +350,18 @@ def test_duplicate_names_ignore_case_and_whitespace():
     assert created['room']['people']==['Alice']
     assert b.post('/api/join/'+created['invite'],json={'name':' ALICE '}).status_code==409
 
-def test_tab_scoped_voice_signaling_uses_each_membership():
-    client=TestClient(app);one={'X-ShopSide-Session':'a'*32};two={'X-ShopSide-Session':'b'*32}
-    created=client.post('/api/rooms',json={'name':'A'},headers=one).json();r=created['room']['id']
-    assert client.post('/api/join/'+created['invite'],json={'name':'B'},headers=two).status_code==200
-    origin={'origin':'http://localhost:3000'}
-    with client.websocket_connect('/api/rooms/'+r+'/call?session='+('a'*32),headers=origin) as a:
-        with client.websocket_connect('/api/rooms/'+r+'/call?session='+('b'*32),headers=origin) as b:
-            assert a.receive_json()=={'type':'peer_ready','peer':'B'}
-            a.send_json({'type':'offer','to':'B','payload':{'sdp':'test'}})
-            assert b.receive_json()=={'type':'offer','payload':{'sdp':'test'},'peer':'A'}
+def test_websocket_observes_commit_without_local_notification():
+    """Simulate a second Cloud Run instance writing the same database."""
+    import json
+    import app.main as main
+    with TestClient(main.app) as client:
+        room=client.post('/api/rooms',json={'name':'Alex'}).json()['room'];rid=room['id']
+        with client.websocket_connect('/api/rooms/'+rid+'/live',headers={'origin':'http://localhost:3000'}) as ws:
+            assert ws.receive_json()['revision']==0
+            state=main.load(rid)
+            state['messages'].append({'actor':'Sam','text':'Cross-instance message'})
+            state['revision']+=1
+            main.db.execute('UPDATE rooms SET state=? WHERE id=?',(json.dumps(state),rid))
+            main.db.commit()  # No notify(rid): the other instance has no subscriber handle.
+            incoming=ws.receive_json()
+            assert incoming['messages'][-1]['text']=='Cross-instance message'

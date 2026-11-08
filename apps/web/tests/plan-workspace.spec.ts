@@ -1,0 +1,27 @@
+import {test,expect} from '@playwright/test';
+test('the shared plan keeps budget editing visible after a budget is chosen',async({page})=>{
+ const base=process.env.SHOPSIDE_TEST_URL||'http://localhost:3000';
+ await page.goto(base);
+ await page.getByLabel('Your name').fill('Alex');
+ await page.getByRole('button',{name:'Create your shopping room'}).click();
+ await page.getByRole('button',{name:'View plan'}).click();
+ const plan=page.getByLabel('Shopping plan');
+ await expect(plan.getByRole('heading',{name:'Everything you’re choosing, in one place.'})).toBeVisible();
+ await plan.getByRole('button',{name:'Edit budget'}).click();
+ await plan.getByLabel('New total budget').fill('500.00');
+ await plan.getByRole('button',{name:'Save budget'}).click();
+ await expect(plan.getByText('USD 500.00')).toBeVisible();
+ await plan.getByRole('button',{name:'Edit budget'}).click();
+ await plan.getByLabel('New total budget').fill('800.00');
+ await plan.getByRole('button',{name:'Save budget'}).click();
+ await expect(plan.getByText('USD 800.00')).toBeVisible();
+ await expect(plan.getByRole('button',{name:'Compare saved products'})).toBeDisabled();
+ await plan.getByLabel('Your shopping preference').fill('Comfortable for long calls');
+ await plan.getByRole('button',{name:'Save preference'}).click();
+ await expect(plan.getByLabel('Shared preferences').getByText('Comfortable for long calls')).toBeVisible();
+ await expect(page.getByText('Room priorities')).toHaveCount(0);
+ await page.getByRole('button',{name:'Close Our plan'}).click();
+ await page.getByRole('button',{name:'View plan'}).click();
+ await expect(plan.getByText('USD 800.00')).toBeVisible();
+ await expect(plan.getByLabel('Shared preferences').getByText('Comfortable for long calls')).toBeVisible();
+});

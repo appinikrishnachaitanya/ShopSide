@@ -1,6 +1,18 @@
 "use client";
 import { sessionFetch } from "./lib/session";
 import { useEffect, useState } from "react";
+
+function mergeListingEvidence(selected:any,fresh:any){
+  if(!fresh||fresh.id!==selected.id)return selected;
+  return {
+    ...fresh,
+    ...selected,
+    attributes:{...(fresh.attributes||{}),...(selected.attributes||{})},
+    key_features:selected.key_features?.length?selected.key_features:fresh.key_features||[],
+    variants:selected.variants||fresh.variants,
+    offers:selected.offers||[],
+  };
+}
 export default function ProductDetails({
   product,
   room,
@@ -13,11 +25,18 @@ export default function ProductDetails({
   const [detail, setDetail] = useState<any>(null),
     [loading, setLoading] = useState(false),
     [error, setError] = useState(""),
-    [notice, setNotice] = useState("");
+    [notice, setNotice] = useState(""),
+    [lens,setLens]=useState<any>(null),
+    [history,setHistory]=useState<any>(null),
+    [watchPrice,setWatchPrice]=useState(""),
+    [watchCurrency,setWatchCurrency]=useState(product.offers?.[0]?.currency||"USD"),
+    [watchRetailer,setWatchRetailer]=useState(""),
+    [watches,setWatches]=useState<any[]>([]);
   useEffect(() => {
     let active = true;
     setDetail(null);
-    setError("");
+    setLens(null);setHistory(null);
+    setError("");setNotice("");setWatchCurrency(product.offers?.[0]?.currency||"USD");
     sessionFetch(
       "/api/rooms/" +
         room.id +
@@ -29,10 +48,16 @@ export default function ProductDetails({
         return r.json();
       })
       .then((x) => {
-        if (active) setDetail(x);
+        if (active) {
+          if(x.id!==product.id)setNotice("Channel3 detail data did not match this saved listing. Keeping its original name and retailer offers.");
+          setDetail(mergeListingEvidence(product,x));
+        }
       })
       .catch((e) => {
-        if (active) setError(e.message);
+        if (active) {
+          setDetail(product);
+          setNotice(`${e.message} Showing the saved listing and its original retailer offer.`);
+        }
       });
     return () => {
       active = false;
@@ -74,6 +99,51 @@ export default function ProductDetails({
     }
   }
   const variants = detail?.variants;
+  useEffect(()=>{
+    let active=true;
+    sessionFetch(`/api/rooms/${room.id}/price-watches`).then(r=>r.ok?r.json():[]).then(rows=>{if(active)setWatches(rows)}).catch(()=>{});
+    return()=>{active=false};
+  },[room.id]);
+  async function watchAction(action:"create"|"pause"|"resume"|"cancel",id?:string){
+    setLoading(true);setError("");
+    try{
+      const selected_options=Object.fromEntries((variants?.selected||[]).map((item:any)=>[item.name,item.label]));
+      const body=action==="create"?{product_id:product.id,threshold_cents:Math.round(Number(watchPrice)*100),currency:watchCurrency,retailer_domain:watchRetailer||null,selected_options}:{};
+      if(action==="create"&&(!Number.isFinite(body.threshold_cents)||body.threshold_cents<=0))throw Error(`Enter a price above 0 ${watchCurrency}.`);
+      const path=action==="create"?`/api/rooms/${room.id}/price-watches`:`/api/rooms/${room.id}/price-watches/${id}/${action}`;
+      const response=await sessionFetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      const value=await response.json();if(!response.ok)throw Error(value.detail||"Price Watch could not be updated.");
+      setWatches(current=>action==="create"?[...current,value]:current.map(w=>w.id===id?value:w));
+      setNotice(action==="create"?"Price Watch is on. Channel3 will notify ShopSide when it detects an offer change.":`Price Watch ${value.status}.`);
+    }catch(e:any){setError(e.message)}finally{setLoading(false)}
+  }
+  async function commerceView(kind:"seller-lens"|"price-intelligence"){
+    setLoading(true);setError("");
+    try{
+      const response=await sessionFetch(`/api/rooms/${room.id}/products/${encodeURIComponent(product.provider_id)}/${kind}`);
+      const value=await response.json().catch(()=>null);
+      if(!response.ok)throw Error(value?.detail||"Price or seller data is temporarily unavailable. Please retry.");
+      if(!value)throw Error("Price or seller data is temporarily unavailable. Please retry.");
+      if(kind==="seller-lens"){
+        if(value.product?.id!==product.id)throw Error("Seller data did not match this selected listing. Its saved offer details remain unchanged.");
+        setLens(value);setDetail(mergeListingEvidence(product,value.product));
+      }else setHistory(value);
+    }catch(e:any){setError(e.message)}finally{setLoading(false)}
+  }
+  async function openRetailer(retailer:string){
+    const tab=window.open("about:blank","_blank");
+    try{
+      const response=await sessionFetch(`/api/rooms/${room.id}/products/${encodeURIComponent(product.provider_id)}/retailer-link?retailer=${encodeURIComponent(retailer)}`);
+      const value=await response.json();if(!response.ok)throw Error(value.detail||"Retailer offer is unavailable.");
+      if(tab){tab.opener=null;tab.location.href=value.url}else window.location.href=value.url;
+    }catch(e:any){tab?.close();setError(e.message)}
+  }
+  function chooseVariant(option:any,label:string){
+    const selectedValues=Object.fromEntries((variants.selected||[]).map((x:any)=>[x.name,x.label]));
+    selectedValues[option.name]=label;
+    const choice=option.values.find((x:any)=>x.label===label);
+    action("resolve",selectedValues as Record<string,string>,choice?.product_id||undefined);
+  }
   return (
     <section className="provider-details" aria-label="Product details">
       <div className="provider-details-heading">
@@ -81,7 +151,7 @@ export default function ProductDetails({
         <button disabled={!online || loading} onClick={() => action("similar")}>
           Find similar products ↗
         </button>
-        <button disabled={!online || loading} onClick={() => action("cheaper")}>Find cheaper similar options</button>
+        <button disabled={!online || loading} onClick={() => action("cheaper")}>Find a better price</button>
       </div>
       {notice && <p role="status">{notice}</p>}
       {!detail && !error && (
@@ -107,58 +177,33 @@ export default function ProductDetails({
               variants.selected?.find((x: any) => x.name === option.name)
                 ?.label || "";
             return (
-              <label key={option.name}>
-                {option.name}
-                <select
-                  aria-label={"Select " + option.name}
-                  value={selected}
-                  disabled={!online || loading}
-                  onChange={(e) => {
-                    const selectedValues = Object.fromEntries(
-                      (variants.selected || []).map((x: any) => [
-                        x.name,
-                        x.label,
-                      ]),
-                    );
-                    selectedValues[option.name] = e.target.value;
-                    const choice = option.values.find(
-                      (x: any) => x.label === e.target.value,
-                    );
-                    action(
-                      "resolve",
-                      selectedValues as Record<string, string>,
-                      choice?.product_id || undefined,
-                    );
-                  }}
-                >
-                  <option value="" disabled>
-                    Choose {option.name}
-                  </option>
-                  {option.values.map((value: any) => (
-                    <option
-                      key={value.label}
-                      value={value.label}
-                      disabled={
-                        value.exists === false ||
-                        value.available === "OutOfStock"
-                      }
-                    >
-                      {value.label}
-                      {value.available === "OutOfStock" ? " · unavailable" : ""}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <fieldset className="variant-studio" key={option.name}><legend>{option.name} {selected&&<small>· {selected}</small>}</legend><div className="variant-choices">{option.values.map((value:any)=><button type="button" key={value.label} aria-label={`${option.name} ${value.label}`} aria-pressed={selected===value.label} disabled={!online||loading||value.exists===false||value.available==="OutOfStock"} onClick={()=>chooseVariant(option,value.label)}>{value.thumbnail_url&&<img src={value.thumbnail_url} alt=""/>}<span>{value.label}</span>{value.available==="OutOfStock"&&<small>Unavailable</small>}</button>)}</div></fieldset>
             );
           })}
+          <div className="commerce-tools"><button disabled={loading} onClick={()=>commerceView("seller-lens")}>Seller Lens · compare offers</button><button disabled={loading} onClick={()=>commerceView("price-intelligence")}>Price Intelligence</button></div>
+          <section className="price-intelligence" aria-label="Price Watch">
+            <h3>Watch the price</h3>
+            <p>Get a room alert when Channel3 detects an eligible offer at your price. Updates may arrive after the retailer changes its listing.</p>
+            <div className="commerce-tools">
+              <label>Target price
+                <span className="price-watch-target"><select aria-label="Price Watch currency" value={watchCurrency} onChange={e=>setWatchCurrency(e.target.value)}>{[...new Set((detail.offers||[]).map((o:any)=>o.currency).filter(Boolean))].map((currency:any)=><option key={currency} value={currency}>{currency}</option>)}</select><input aria-label={`Target price in ${watchCurrency}`} type="number" min="0.01" step="0.01" value={watchPrice} onChange={e=>setWatchPrice(e.target.value)} placeholder="e.g. 120.00" /></span>
+              </label>
+              <label>Retailer <select value={watchRetailer} onChange={e=>{setWatchRetailer(e.target.value);const offer=detail.offers?.find((item:any)=>item.retailer===e.target.value);if(offer?.currency)setWatchCurrency(offer.currency)}}><option value="">Any eligible retailer</option>{[...new Map((detail.offers||[]).map((offer:any)=>[offer.retailer,offer])).values()].map((offer:any)=><option key={offer.retailer} value={offer.retailer}>{offer.retailer} · {offer.currency}</option>)}</select></label>
+              <button disabled={loading||!online} onClick={()=>watchAction("create")}>Create watch</button>
+            </div>
+            {watches.filter(w=>w.product_id===product.id&&w.status!=="cancelled").map(w=><div key={w.id} className="commerce-tools"><span>At or below {w.currency||"USD"} {(w.threshold_cents/100).toFixed(2)} · {w.status}</span><button disabled={loading} onClick={()=>watchAction(w.status==="paused"?"resume":"pause",w.id)}>{w.status==="paused"?"Resume":"Pause"}</button><button disabled={loading} onClick={()=>watchAction("cancel",w.id)}>Cancel</button></div>)}
+          </section>
+          {lens&&<section className="seller-lens" aria-label="Seller Lens"><h3>Same product. Different retailers.</h3><p>Observed {new Date(lens.observed_at*1000).toLocaleString()} · Listed prices exclude unknown delivery, taxes and fees.</p>{lens.offers?.map((offer:any)=><div key={offer.retailer+offer.url}><strong>{offer.retailer}</strong><span>{offer.price_cents==null?"Price unavailable":`${offer.currency} ${(offer.price_cents/100).toFixed(2)}`} · {offer.availability||"Availability unknown"}</span><button onClick={()=>openRetailer(offer.retailer)}>Check current retailer link ↗</button></div>)}{!lens.offers?.length&&<p>No current retailer offers available.</p>}</section>}
+          {history&&<section className="price-intelligence" aria-label="Price Intelligence"><h3>Observed price history</h3>{history.available?<><p>{history.statistics?.classification==="low"?"Currently near the observed low.":history.statistics?.classification==="high"?"Currently near the observed high.":"Currently in the typical observed range."} Data through {new Date(history.as_of).toLocaleDateString()}.</p><div><span>Low {history.statistics.currency} {(history.statistics.minimum_cents/100).toFixed(2)}</span><span>Mean {history.statistics.currency} {(history.statistics.mean_cents/100).toFixed(2)}</span><span>High {history.statistics.currency} {(history.statistics.maximum_cents/100).toFixed(2)}</span></div><div className="price-history-bars" aria-label="Observed historical prices">{history.observations?.slice(-30).map((point:any,i:number)=><i key={i} title={`${point.currency} ${(point.price_cents/100).toFixed(2)} · ${point.at}`} style={{height:`${Math.max(8,Math.min(100,(point.price_cents/history.statistics.maximum_cents)*100))}%`}}/>)}</div><small>Historical observations do not predict future prices.</small></>:<p>{history.reason}</p>}</section>}
           <h3>Retailer offers</h3>
+          <p>Retailer links may be affiliate links, so ShopSide may earn a commission. You purchase and pay on the retailer’s site.</p>
           {detail.offers?.length ? (
             detail.offers.map((offer: any, i: number) => (
               <p key={i}>
-                <a href={offer.url} target="_blank" rel="noopener noreferrer">
+                <button onClick={()=>openRetailer(offer.retailer)}>
                   {offer.retailer} · {offer.currency}{" "}
-                  {(offer.price_cents / 100).toFixed(2)} ↗
-                </a>{" "}
+                  {offer.price_cents == null ? 'Price unavailable' : (offer.price_cents / 100).toFixed(2)} ↗
+                </button>{" "}
                 · {offer.availability || "Availability unknown"}
                 {offer.condition ? " · " + offer.condition : ""}
               </p>

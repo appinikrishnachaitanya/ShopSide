@@ -1,4 +1,4 @@
-"""Eligibility and AI wording for a verified two-person memory receipt."""
+"""Eligibility and AI wording for a shared decision with one verified payer."""
 import asyncio, json, os, re
 from datetime import datetime
 from fastapi import HTTPException
@@ -19,10 +19,11 @@ def eligible_memory(state, product_id, payments):
         stamps=[datetime.fromisoformat(times[name]) for name in people]
         if commit_time.tzinfo is None or any(t.tzinfo is None or t>commit_time for t in stamps):return None
     except (ValueError,TypeError):return None
-    matched={name:[] for name in people}
+    payer=state.get('payer')
+    if payer not in people:return None
+    matched=[]
     for p in payments:
-        payer=p.get('payer')
-        if (payer not in people or p.get('status')!='paid' or p.get('verification')!='paypal_order_readback'
+        if (p.get('payer')!=payer or p.get('status')!='paid' or p.get('verification')!='paypal_order_readback'
             or not p.get('verified_at') or not p.get('capture') or not p.get('provider_id')
             or p.get('currency')!='USD' or not isinstance(p.get('total'),int) or p['total']<=0
             or not any(line.get('product')==product_id for line in p.get('items',[]))):continue
@@ -30,13 +31,13 @@ def eligible_memory(state, product_id, payments):
             verified=datetime.fromisoformat(p['verified_at'])
             if verified.tzinfo is None:continue
         except (ValueError,TypeError):continue
-        matched[payer].append(p)
-    if not all(matched.values()):return None
-    if not any(first['capture']!=second['capture'] and first['provider_id']!=second['provider_id'] for first in matched[people[0]] for second in matched[people[1]]):return None
+        matched.append(p)
+    if not matched:return None
+    payment=max(matched,key=lambda p:p['verified_at'])
     reactions=state.get('marker_reactions',{}).get(product_id,{})
     return {'product_id':product_id,'product_name':item['name'],'committed_at':committed,
             'members':[{'name':name,'approved_at':times[name],'reaction':reactions.get(name) if reactions.get(name) in REACTIONS else None} for name in people],
-            'payments_verified':2,'environment':'sandbox'}
+            'payments_verified':1,'paid_by':payer,'sandbox_order_id':payment['id'],'environment':'sandbox'}
 
 async def generate_memory_line(facts):
     if not os.getenv('GEMINI_MODEL'):raise HTTPException(503,'Memory writing is unavailable; configure the AI model')

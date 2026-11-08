@@ -8,7 +8,7 @@ test('invite needs only a name; two tabs retain distinct identities and shared c
    class TrackingSocket extends NativeSocket {constructor(url:string|URL,protocols?:string|string[]){if(protocols)super(url,protocols);else super(url);if(String(url).includes('/live'))(window as any).__roomSockets.push(this);}}
    window.WebSocket=TrackingSocket;
  });
- const first=await context.newPage();await first.goto(base);await first.getByLabel('Your name').fill('Alex');await first.getByRole('button',{name:'Create your room'}).click();await expect(first).toHaveURL(/room=/);await expect(first.getByText('Connected',{exact:true})).toBeVisible();
+ const first=await context.newPage();await first.goto(base);await first.getByLabel('Your name').fill('Alex');await first.getByRole('button',{name:'Create your shopping room'}).click();await expect(first).toHaveURL(/room=/);await expect(first.getByText('Connected',{exact:true})).toBeVisible();
  const id=new URL(first.url()).searchParams.get('room');const state=await (await first.request.get(base+'/api/rooms/'+id)).json();
  const second=await context.newPage();await second.goto(base+'?invite='+state.invite);
  await expect(second.getByLabel('What are you shopping for today?')).toHaveCount(0);await expect(second.getByLabel('Shopping mode')).toHaveCount(0);

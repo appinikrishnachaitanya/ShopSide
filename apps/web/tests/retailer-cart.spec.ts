@@ -13,7 +13,7 @@ test("live retailer item is visible in both carts and cannot enter sandbox check
     second = await b.newPage();
   await first.goto(url);
   await first.getByLabel("Your name").fill("Shopper A");
-  await first.getByRole("button", { name: "Create your room" }).click();
+  await first.getByRole("button", { name: "Create your shopping room" }).click();
   await expect(first.getByText("Connected", { exact: true })).toBeVisible();
   const id = new URL(first.url()).searchParams.get("room");
   const room = await (await first.request.get(url + "/api/rooms/" + id)).json();
@@ -47,7 +47,7 @@ test("live retailer item is visible in both carts and cannot enter sandbox check
       .getByText(productName, { exact: true }),
   ).toBeVisible();
   await expect(
-    first.getByRole("button", { name: "Review exact quote" }),
+    first.getByRole("button", { name: "Continue to PayPal Sandbox" }),
   ).toBeDisabled();
   await first.reload();
   await first.locator(".cart-details summary").click();

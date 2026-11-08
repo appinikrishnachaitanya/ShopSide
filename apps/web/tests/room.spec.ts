@@ -8,10 +8,15 @@ test("desktop and mobile share persisted room", async ({ browser }) => {
   const b = await browser.newContext({ viewport: { width: 375, height: 812 } });
   const first = await a.newPage(),
     second = await b.newPage();
-  const view = (page: any, name: string) => page.getByRole("navigation", { name: "Shopping workspace" }).getByRole("button", { name: new RegExp("^" + name) }).click();
+  const view = async (page: any, name: string) => {
+    const close = page.locator("dialog[open] .workspace-dialog-header button");
+    if (await close.count()) await close.click();
+    if (name === "Compare") { await page.getByRole("button", {name:"View plan"}).click(); await page.getByRole("button", {name:"Compare saved products"}).click(); }
+    else if (name !== "Discover") await page.getByRole("button", { name: new RegExp("^" + (name === "Spotlight" ? "View selected" : name)) }).first().click();
+  };
   await first.goto(testBase);
   await first.getByLabel("Your name").fill("Krishna");
-  await first.getByRole("button", { name: "Create your room" }).click();
+  await first.getByRole("button", { name: "Create your shopping room" }).click();
   await expect(first.getByText("Connected", { exact: true })).toBeVisible();
   const roomId = new URL(first.url()).searchParams.get("room");
   const state = await (
@@ -48,8 +53,10 @@ test("desktop and mobile share persisted room", async ({ browser }) => {
   await first
     .getByRole("button", { name: "Save to Together", exact: true })
     .click();
-  await view(second, "Compare");
-  await expect(second.getByText("1 saved to your shortlist")).toBeVisible();
+  await second.getByRole("button", {name:"Close Product details"}).click();
+  await second.getByRole("button", {name:"View plan"}).click();
+  await expect(second.getByText("product saved to compare")).toBeVisible();
+  await second.getByRole("button", {name:"Close Our plan"}).click();
   await view(second, "Discover");
   await second
     .getByRole("button", { name: /Sunday Studio.*Look at this/ })
@@ -60,7 +67,6 @@ test("desktop and mobile share persisted room", async ({ browser }) => {
     .click();
   await view(first, "Compare");
   await expect(first.getByText("2 saved to your shortlist")).toBeVisible();
-  await first.getByRole("button", { name: "Compare picks" }).click();
   await view(second, "Compare");
   await expect(
     first.locator(".board").getByText("Sunday Studio", { exact: true }),
@@ -68,6 +74,7 @@ test("desktop and mobile share persisted room", async ({ browser }) => {
   await expect(
     second.locator(".board").getByText("Quiet Hours", { exact: true }),
   ).toBeVisible();
+  await view(second, "Discover");
   await second.getByLabel("Message everyone").fill("Comfort matters to me");
   await second
     .getByRole("button", { name: "Send message", exact: true })
@@ -95,6 +102,7 @@ test("desktop and mobile share persisted room", async ({ browser }) => {
   await first.getByLabel("Product variant").selectOption("midnight");
   await first.getByLabel("Product quantity").fill("2");
   await first.getByRole("button", { name: "Add to cart" }).click();
+  await view(second, "Discover");
   await second.locator(".cart-details summary").click();
   await expect(
     second.getByText("Quiet Hours · midnight", { exact: true }),
@@ -120,7 +128,7 @@ test("desktop and mobile share persisted room", async ({ browser }) => {
   await first.getByRole("button", { name: "Update quantity" }).click();
   await expect(second.getByLabel("Quantity 2 midnight")).toHaveValue("2");
   await first
-    .getByRole("button", { name: "Review exact quote", exact: true })
+    .getByRole("button", { name: "Continue to PayPal Sandbox", exact: true })
     .click();
   await expect(first.getByText("Total $198.00 USD")).toBeVisible();
   await expect(
