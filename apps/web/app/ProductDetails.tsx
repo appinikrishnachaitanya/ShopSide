@@ -15,7 +15,10 @@ export default function ProductDetails({
     [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
     [lens,setLens]=useState<any>(null),
-    [history,setHistory]=useState<any>(null);
+    [history,setHistory]=useState<any>(null),
+    [watchPrice,setWatchPrice]=useState(""),
+    [watchRetailer,setWatchRetailer]=useState(""),
+    [watches,setWatches]=useState<any[]>([]);
   useEffect(() => {
     let active = true;
     setDetail(null);
@@ -77,6 +80,24 @@ export default function ProductDetails({
     }
   }
   const variants = detail?.variants;
+  useEffect(()=>{
+    let active=true;
+    sessionFetch(`/api/rooms/${room.id}/price-watches`).then(r=>r.ok?r.json():[]).then(rows=>{if(active)setWatches(rows)}).catch(()=>{});
+    return()=>{active=false};
+  },[room.id]);
+  async function watchAction(action:"create"|"pause"|"resume"|"cancel",id?:string){
+    setLoading(true);setError("");
+    try{
+      const selected_options=Object.fromEntries((variants?.selected||[]).map((item:any)=>[item.name,item.label]));
+      const body=action==="create"?{product_id:product.id,threshold_cents:Math.round(Number(watchPrice)*100),retailer_domain:watchRetailer||null,selected_options}:{};
+      if(action==="create"&&(!Number.isFinite(body.threshold_cents)||body.threshold_cents<=0))throw Error("Enter a price above $0.");
+      const path=action==="create"?`/api/rooms/${room.id}/price-watches`:`/api/rooms/${room.id}/price-watches/${id}/${action}`;
+      const response=await sessionFetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      const value=await response.json();if(!response.ok)throw Error(value.detail||"Price Watch could not be updated.");
+      setWatches(current=>action==="create"?[...current,value]:current.map(w=>w.id===id?value:w));
+      setNotice(action==="create"?"Price Watch is on. Channel3 will notify ShopSide when it detects an offer change.":`Price Watch ${value.status}.`);
+    }catch(e:any){setError(e.message)}finally{setLoading(false)}
+  }
   async function commerceView(kind:"seller-lens"|"price-intelligence"){
     setLoading(true);setError("");
     try{
@@ -138,9 +159,11 @@ export default function ProductDetails({
             );
           })}
           <div className="commerce-tools"><button disabled={loading} onClick={()=>commerceView("seller-lens")}>Seller Lens · compare offers</button><button disabled={loading} onClick={()=>commerceView("price-intelligence")}>Price Intelligence</button></div>
+          <section className="price-intelligence" aria-label="Price Watch"><h3>Watch the price</h3><p>Get a room alert when Channel3 detects an eligible offer at your price. Updates may arrive after the retailer changes its listing.</p><div className="commerce-tools"><label>Target price · USD <input type="number" min="0.01" step="0.01" value={watchPrice} onChange={e=>setWatchPrice(e.target.value)} placeholder="e.g. 120.00" /></label><label>Retailer <select value={watchRetailer} onChange={e=>setWatchRetailer(e.target.value)}><option value="">Any eligible retailer</option>{[...new Set((detail.offers||[]).map((o:any)=>o.retailer as string))].map((domain:any)=><option key={domain} value={domain}>{domain}</option>)}</select></label><button disabled={loading||!online} onClick={()=>watchAction("create")}>Create watch</button></div>{watches.filter(w=>w.product_id===product.id&&w.status!=="cancelled").map(w=><div key={w.id} className="commerce-tools"><span>At or below ${(w.threshold_cents/100).toFixed(2)} · {w.status}</span><button disabled={loading} onClick={()=>watchAction(w.status==="paused"?"resume":"pause",w.id)}>{w.status==="paused"?"Resume":"Pause"}</button><button disabled={loading} onClick={()=>watchAction("cancel",w.id)}>Cancel</button></div>)}</section>
           {lens&&<section className="seller-lens" aria-label="Seller Lens"><h3>Same product. Different retailers.</h3><p>Observed {new Date(lens.observed_at*1000).toLocaleString()} · Listed prices exclude unknown delivery, taxes and fees.</p>{lens.offers?.map((offer:any)=><div key={offer.retailer+offer.url}><strong>{offer.retailer}</strong><span>{offer.price_cents==null?"Price unavailable":`${offer.currency} ${(offer.price_cents/100).toFixed(2)}`} · {offer.availability||"Availability unknown"}</span><button onClick={()=>openRetailer(offer.retailer)}>Check current retailer link ↗</button></div>)}{!lens.offers?.length&&<p>No current retailer offers available.</p>}</section>}
           {history&&<section className="price-intelligence" aria-label="Price Intelligence"><h3>Observed price history</h3>{history.available?<><p>{history.statistics?.classification==="low"?"Currently near the observed low.":history.statistics?.classification==="high"?"Currently near the observed high.":"Currently in the typical observed range."} Data through {new Date(history.as_of).toLocaleDateString()}.</p><div><span>Low {history.statistics.currency} {(history.statistics.minimum_cents/100).toFixed(2)}</span><span>Mean {history.statistics.currency} {(history.statistics.mean_cents/100).toFixed(2)}</span><span>High {history.statistics.currency} {(history.statistics.maximum_cents/100).toFixed(2)}</span></div><div className="price-history-bars" aria-label="Observed historical prices">{history.observations?.slice(-30).map((point:any,i:number)=><i key={i} title={`${point.currency} ${(point.price_cents/100).toFixed(2)} · ${point.at}`} style={{height:`${Math.max(8,Math.min(100,(point.price_cents/history.statistics.maximum_cents)*100))}%`}}/>)}</div><small>Historical observations do not predict future prices.</small></>:<p>{history.reason}</p>}</section>}
           <h3>Retailer offers</h3>
+          <p>Retailer links may be affiliate links, so ShopSide may earn a commission. You purchase and pay on the retailer’s site.</p>
           {detail.offers?.length ? (
             detail.offers.map((offer: any, i: number) => (
               <p key={i}>

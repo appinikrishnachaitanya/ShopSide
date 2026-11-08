@@ -89,6 +89,7 @@ export default function Home() {
   const [orderRef, setOrderRef] = useState("");
   const [paymentBusy, setPaymentBusy] = useState(false);
   const [paypalReady, setPaypalReady] = useState(false);
+  const [preauthorization, setPreauthorization] = useState(false);
   const [initialMissionLoading, setInitialMissionLoading] = useState(false);
   const [hiddenDealPromptKey, setHiddenDealPromptKey] = useState("");
   const [highlightPlanDeals, setHighlightPlanDeals] = useState(false);
@@ -246,13 +247,13 @@ export default function Home() {
       E(e.message);
     }
   }
-  async function pay(action: string) {
+  async function pay(action: string, authorizeMode = preauthorization || quote?.authorization_mode === "PREAUTHORIZED" || room?.checkout?.authorization_mode === "PREAUTHORIZED") {
     if (paymentBusy) return;
     setPaymentBusy(true);
     let waitingForSdk = false;
     try {
       const result = await api(
-        "rooms/" + room.id + "/payments/" + quote.id + "/" + action,
+        "rooms/" + room.id + "/payments/" + quote.id + "/" + (authorizeMode ? "preauthorize/" : "") + action,
         {},
       );
       if (action === "create") {
@@ -264,7 +265,7 @@ export default function Home() {
         script.src =
           "https://www.paypal.com/sdk/js?client-id=" +
           encodeURIComponent(cfg.client_id) +
-          "&currency=USD&intent=capture";
+          "&currency=USD&intent=" + (authorizeMode ? "authorize" : "capture");
         waitingForSdk = true;
         script.onerror = () => { setPaymentBusy(false); E("Could not load PayPal. Check payment status before retrying."); };
         script.onload = () => {
@@ -273,7 +274,7 @@ export default function Home() {
             if (!paypal?.Buttons) throw Error("PayPal approval is unavailable. Check payment status before retrying.");
             Promise.resolve(paypal.Buttons({
               createOrder: () => result.order_id,
-              onApprove: () => pay("capture"),
+              onApprove: () => pay(authorizeMode ? "authorize" : "capture", authorizeMode),
               onCancel: () =>
                 E("Approval cancelled. Check status before retrying."),
               onError: () => E("PayPal approval failed; check payment status."),
@@ -282,7 +283,7 @@ export default function Home() {
         };
         document.body.appendChild(script);
       } else {
-        if (action === "cancel" && result.status === "cancelled") { V(null); setOrderRef(""); setPaypalReady(false); }
+        if ((action === "cancel" && result.status === "cancelled") || (action === "void" && result.status === "voided")) { V(null); setOrderRef(""); setPaypalReady(false); setPreauthorization(false); }
         setNotice("Sandbox payment status: " + result.status); E("");
       }
     } catch (e: any) {
@@ -1038,6 +1039,7 @@ export default function Home() {
               </div>
               <div className="workspace-panel" hidden={workspaceView!=="plan"} aria-label="Shopping plan">
                 <PlanOverview room={room} me={me} online={online} products={all} showRoomOption={showRoomOption} api={api} onState={fresh=>S((current:any)=>!current || fresh.revision>=current.revision?fresh:current)} onDiscover={()=>setWorkspaceView("discover")} onRoom={()=>{setStudioActive(false);setWorkspaceView("room")}} toggleShortlist={id=>command("shortlist",id)} onCompare={async()=>{try{if(room.comparison?.join(",")!==room.shortlist.join(","))await api("rooms/"+room.id+"/commands",{kind:"compare",value:room.shortlist.join(","),revision:room.revision,command_id:crypto.randomUUID()});setWorkspaceView("together");E("")}catch(e:any){E(e.message)}}} />
+                {(room.price_watch_alerts||[]).filter((alert:any)=>alert.participant===me).slice(-3).map((alert:any)=><div key={alert.id} className="plan-deals-highlight" role="status"><strong>Price Watch · ${((alert.price_cents||0)/100).toFixed(2)} USD</strong><p>{alert.message}</p><small>Observed {new Date(alert.observed_at).toLocaleString()} · Open the product to check its latest retailer offer.</small></div>)}
                 <div id="plan-deals" tabIndex={-1} className={"plan-deals"+(highlightPlanDeals?" plan-deals-highlight":"")}><SellerOffers room={room} me={me} onCheckout={async offer=>{try{const payment=await api(`rooms/${room.id}/seller-offers/${offer.id}/checkout`,{});V(payment);openCart();E("")}catch(e:any){E(e.message)}}} /></div>
                 {room.mode === "move_in" ? <details className="plan-more"><summary>Move-in planning details</summary><MoveIn room={room} online={online} me={me} api={api} initialLoading={initialMissionLoading} onResults={()=>setWorkspaceView("discover")} /><MemoryReceipt room={room} online={online} /></details> : <details className="plan-more"><summary>Ask ShopSide about your plan</summary><Concierge room={room} online={online} /><button type="button" disabled={!online} onClick={async()=>{try{await api("rooms/"+room.id+"/home-plan",{});E("");}catch(e:any){E(e.message);}}}>Add move-in planning</button></details>}
               </div>
@@ -1233,7 +1235,7 @@ export default function Home() {
                   ))}
                   {!!room.external_cart?.length && (
                     <section aria-label="Retailer items">
-                      <div className="cart-section-heading"><span>02 · RETAILER CHECKOUT</span><h3>Live retailer items</h3><p>Buy directly on each retailer’s site. Current price, delivery and availability are confirmed there.</p></div>
+                      <div className="cart-section-heading"><span>02 · RETAILER CHECKOUT</span><h3>Live retailer items</h3><p>Buy directly on each retailer’s site. Current price, delivery and availability are confirmed there. ShopSide may earn a commission from retailer links.</p></div>
                       {room.external_cart.map((item: any) => (
                         <div className="cart-line cart-product" key={item.id}>
                           <div className="cart-product-main">{item.image && <img src={item.image} alt=""/>}<div><strong>{item.name}</strong><small>Live product · retailer checkout</small></div></div>
@@ -1293,15 +1295,17 @@ export default function Home() {
                       </strong>
                       {quote.reference_total!=null&&<p>Original ${(quote.reference_total/100).toFixed(2)} · Savings ${((quote.reference_total-quote.total)/100).toFixed(2)}</p>}
                       {room.checkout?.status==="paid"&&quote.merchant_id&&<div className="order-receipt"><span>ORDER COMPLETED · PAYPAL SANDBOX</span><h4>Chosen together. Paid in sandbox.</h4><p>{quote.merchant_name} · {quote.items?.map((item:any)=>`${item.name} × ${item.quantity}`).join(" + ")}</p><strong>ShopSide order {room.checkout.order_id||quote.id}</strong><small>PayPal capture {room.checkout.paypal_capture_id||quote.capture} · ${((quote.total||0)/100).toFixed(2)} USD · No goods shipped</small><a href={`/orders/${encodeURIComponent(room.checkout.order_id||quote.id)}?room=${encodeURIComponent(room.id)}`}>View order summary →</a></div>}
-                      {orderRef && <p className="order-reference">Sandbox order: <strong>{orderRef}</strong> · {room.checkout?.status === "paid" ? "payment verified" : "awaiting PayPal approval"}</p>}
-                      {room.checkout?.status!=="paid" && <p className="quote-approval-note">You’ll review and approve the payment in PayPal before anything is captured.</p>}
+                      {orderRef && <p className="order-reference">Sandbox order: <strong>{orderRef}</strong> · {room.checkout?.status === "paid" ? "payment verified" : room.checkout?.status === "authorized" ? "authorized hold; settlement pending" : "awaiting PayPal approval"}</p>}
+                      {room.checkout?.status!=="paid" && <p className="quote-approval-note">{preauthorization ? "PayPal will place a temporary authorization hold for this exact sandbox merchant and amount. The accepted offer can settle within 24 hours while you are away." : "You’ll review and approve the payment in PayPal before anything is captured."}</p>}
+                      {quote.preauthorization_available && (room.checkout?.status || quote.status)==="quoted" && !paypalReady && <label className="quote-approval-note"><input type="checkbox" checked={preauthorization} onChange={event=>setPreauthorization(event.target.checked)} /> Authorize now, settle later if this merchant’s offer still qualifies</label>}
                       {room.checkout?.status!=="paid" && <button className="quote-primary" disabled={paymentBusy || paypalReady} onClick={() => pay("create")}>
-                        {paymentBusy ? "Preparing PayPal…" : paypalReady ? "Approve with PayPal below" : "Create PayPal sandbox order"}
+                        {paymentBusy ? "Preparing PayPal…" : paypalReady ? "Approve with PayPal below" : preauthorization ? "Create PayPal authorization" : "Create PayPal sandbox order"}
                       </button>}
                       <div id="paypal-buttons" />
                       {room.checkout?.status!=="paid" && <button disabled={paymentBusy} onClick={() => pay("status")}>
                         Check payment status
                       </button>}
+                      {room.checkout?.status==="authorized" && <button disabled={paymentBusy} onClick={() => pay("void", true)}>Void authorization</button>}
                       {room.checkout?.status!=="paid" && <button disabled={paymentBusy || (room.checkout?.status || quote.status) !== "quoted"} onClick={() => pay("cancel")}>
                         Cancel unused quote
                       </button>}

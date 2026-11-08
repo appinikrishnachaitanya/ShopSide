@@ -17,7 +17,7 @@ def configured():
     return all(present)
 
 
-def enqueue(job_id):
+def enqueue(job_id,path=None):
     """A failed enqueue leaves the durable pending job recoverable for retry."""
     if not configured():return False
     project=os.environ['GOOGLE_CLOUD_PROJECT']
@@ -29,8 +29,9 @@ def enqueue(job_id):
     credentials,_=google.auth.default(scopes=['https://www.googleapis.com/auth/cloud-platform'])
     credentials.refresh(Request())
     task_name=quote(job_id,safe='')
+    if path is None:path=f'/api/internal/merchant-jobs/{task_name}/process'
     body={'task':{'name':f'{base}/tasks/{task_name}',
-        'httpRequest':{'httpMethod':'POST','url':f'{target}/api/internal/merchant-jobs/{task_name}/process',
+        'httpRequest':{'httpMethod':'POST','url':f'{target}{path}',
             'headers':{'Content-Type':'application/json'},
             'oidcToken':{'serviceAccountEmail':os.environ['CLOUD_TASKS_INVOKER_SERVICE_ACCOUNT'],
                          'audience':audience}}}}

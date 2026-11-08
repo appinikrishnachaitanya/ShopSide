@@ -128,6 +128,10 @@ def market_context(products):
 
 def demand_from_room(room):
     bundle=room.get('smart_bundle') or {}; intent=room.get('shopping_journey',{}).get('intent') or room.get('shopping_intent') or {}
+    # Sandbox merchant prices and checkout are USD only. Never reinterpret a
+    # non-USD budget as USD when matching or negotiating.
+    currencies=[bundle.get('currency'),intent.get('currency'),(room.get('move_in') or {}).get('mission',{}).get('currency')]
+    if any(currency and currency!='USD' for currency in currencies):return None
     categories=[str(x)[:80] for x in (intent.get('product_requirements') or [])[:4]]
     if not categories:
         categories=[str(s.get('requirement',''))[:80] for s in bundle.get('slots',[]) if isinstance(s,dict)][:4]
@@ -148,6 +152,7 @@ def match(db,room_id,room,notify):
     for row in db.execute('SELECT state FROM merchants').fetchall():
         m=read(row)
         if not m['opt_in'] or not m['active'] or not m.get('sandbox'):continue
+        if consent.get('merchant_id') and consent['merchant_id']!=m['id']:continue
         available=[p for p in product_rows(db,m['id']) if p.get('source')=='SHOPSIDE_SANDBOX' and p.get('active') and p.get('stock_quantity',0)>0 and p.get('currency')==demand['currency']]
         chosen=[]
         for requirement in demand['categories']:

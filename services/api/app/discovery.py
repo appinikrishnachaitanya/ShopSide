@@ -94,6 +94,15 @@ def request(path,payload=None):
             with guard:cache[identity]=(time.monotonic(),data)
             return data
     except (httpx.HTTPError,ValueError) as exc: raise HTTPException(502,'Channel3 request failed; retry later') from exc
+
+def cancel_subscription(subscription_id):
+    key=os.getenv('CHANNEL3_API_KEY')
+    if not key:raise HTTPException(503,'Live discovery unavailable — configure Channel3')
+    try:
+        response=httpx.delete('https://api.trychannel3.com/v1/product-subscriptions/'+subscription_id,
+            headers={'x-api-key':key},timeout=15)
+        response.raise_for_status()
+    except httpx.HTTPError as exc:raise HTTPException(502,'Channel3 subscription cancellation failed; retry later') from exc
 def search_products(query,max_price=None):
     body={'query':query,'limit':12}
     if max_price is not None:body['filters']={'price':{'max_price':max_price}}

@@ -201,3 +201,16 @@ def test_webhook_requires_verified_signature_and_deduplicates(monkeypatch):
     assert client.post('/api/paypal/webhook',json=event,headers=headers).status_code==200
     assert client.post('/api/paypal/webhook',json=event,headers=headers).status_code==200
     assert main.db.execute('SELECT COUNT(*) FROM paypal_webhook_events WHERE id=?',(event['id'],)).fetchone()[0]==1
+
+def test_paypal_client_accepts_empty_success_response(monkeypatch):
+    import asyncio
+    import httpx
+    for key in ('PAYPAL_CLIENT_ID','PAYPAL_CLIENT_SECRET','PAYPAL_MERCHANT_ID'):monkeypatch.setenv(key,'test')
+    class Client:
+        def __init__(self,**kwargs):pass
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+        async def post(self,*args,**kwargs):return httpx.Response(200,json={'access_token':'token'},request=httpx.Request('POST','https://example.test'))
+        async def request(self,*args,**kwargs):return httpx.Response(204,request=httpx.Request('POST','https://example.test'))
+    monkeypatch.setattr(main.httpx,'AsyncClient',Client)
+    assert asyncio.run(main.paypal('POST','/v2/payments/authorizations/test/void',{}))=={}

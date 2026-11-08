@@ -73,6 +73,9 @@ def test_quote_review_accept_counter_dismiss_and_invitation(monkeypatch):
     assert friend.get(base).json()['seller_agent']['merchant_id']==ids[0][0]
     assert buyer.post(base+'/seller-offers/action',json={'action':'remove','offer_id':quote['id'],'command_id':'owner-remove'}).status_code==200
     assert 'seller_agent' not in friend.get(base).json()
+    over_budget=friend.post(base+'/seller-offers/action',json={'action':'counter','offer_id':quote['id'],'price_cents':20001,'command_id':'over-budget-counter'})
+    assert over_budget.status_code==422
+    assert friend.get(base).json()['flash_offers'][0]['status']=='OFFER_PUBLISHED'
     assert friend.post(base+'/seller-offers/action',json={'action':'counter','offer_id':quote['id'],'price_cents':13000,'command_id':'friend-counter'}).status_code==200
     assert buyer.post(base+'/seller-offers/action',json={'action':'accept','offer_id':quote['id'],'command_id':'owner-accept'}).status_code==200
     assert client.get('/api/merchant/me',headers=headers).json()['metrics']['accepted_deals']==1
@@ -90,6 +93,35 @@ def test_seller_consent_policy_records_changes_without_payment_authority():
     revoked=buyer.post(base+'/seller-offers/consent',json={'enabled':False,'command_id':'policy-revoke'}).json()
     assert revoked['seller_policy_history'][-1]['enabled'] is False
     assert revoked['seller_offers']['enabled'] is False
+
+def test_seller_negotiation_window_is_bounded_and_not_payment_approval():
+    buyer,_,rid=room();base='/api/rooms/'+rid
+    assert buyer.post(base+'/seller-offers/consent',json={'enabled':True,'duration_seconds':172801,'command_id':'window-invalid'}).status_code==422
+    before=int(time.time())
+    response=buyer.post(base+'/seller-offers/consent',json={'enabled':True,'duration_seconds':86400,'command_id':'window-valid'})
+    assert response.status_code==200
+    state=response.json()
+    assert before+86400<=state['seller_offers']['expires_at']<=int(time.time())+86400
+    assert state['seller_policy_history'][-1]['payment_authorized'] is False
+
+def test_deal_rescue_does_not_treat_foreign_currency_budget_as_usd():
+    from app.merchant import demand_from_room
+    assert demand_from_room({'budget':10000,'shopping_intent':{'product_requirements':['desk'],'currency':'GBP'}}) is None
+    assert demand_from_room({'budget':10000,'shopping_intent':{'product_requirements':['desk'],'currency':'USD'}})['currency']=='USD'
+
+def test_buyer_can_scope_negotiation_to_one_participating_merchant(monkeypatch):
+    ids=setup(monkeypatch);buyer,_,rid=room();base='/api/rooms/'+rid
+    assert TestClient(main.app).get(base+'/deal-rescue/merchants').status_code==403
+    choices=buyer.get(base+'/deal-rescue/merchants').json()['merchants']
+    assert any(item['id']==ids[0][0] for item in choices)
+    enabled=buyer.post(base+'/seller-offers/consent',json={'enabled':True,'merchant_id':ids[0][0],'command_id':'scoped-consent'})
+    assert enabled.status_code==200
+    assert enabled.json()['seller_policy_history'][-1]['merchant_id']==ids[0][0]
+    assert buyer.post(base+'/seller-offers/request').json()['opportunity_count']==1
+    opportunities=buyer.get(base+'/deal-rescue').json()['opportunities']
+    assert len(opportunities)==1 and opportunities[0]['merchant_name']=='Sandbox 1'
+    changed=buyer.post(base+'/seller-offers/consent',json={'enabled':True,'merchant_id':ids[1][0],'command_id':'scope-change'})
+    assert changed.status_code==409
 
 def test_deal_rescue_progress_is_room_scoped_and_hides_merchant_policy(monkeypatch):
     setup(monkeypatch)
