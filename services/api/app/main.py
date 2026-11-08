@@ -833,8 +833,13 @@ db.commit()
 class WatchRequest(BaseModel):
     product_id:str=Field(min_length=1,max_length=200)
     threshold_cents:int=Field(gt=0,le=100000000)
+    currency:str=Field(default='USD',pattern='^[A-Z]{3}$')
     retailer_domain:str|None=Field(default=None,max_length=253)
     selected_options:dict[str,str]=Field(default_factory=dict)
+
+def offers_in_watch_currency(offers,scope):
+    currency=scope.get('currency','USD')
+    return [offer for offer in offers if offer.get('currency')==currency]
 
 @app.get('/api/rooms/{r}/price-watches')
 def list_price_watches(r:str,request:Request):
@@ -846,13 +851,16 @@ def list_price_watches(r:str,request:Request):
 def create_price_watch(r:str,body:WatchRequest,request:Request):
     from .discovery import request as channel3_request
     if not body.product_id.startswith('channel3:'):raise HTTPException(422,'Price Watch requires a live Channel3 product')
+    selected=room_channel3_product(r,body.product_id[9:],request)
+    matching_offers=[offer for offer in selected.get('offers',[]) if offer.get('currency')==body.currency and (not body.retailer_domain or offer.get('retailer','').casefold()==body.retailer_domain.casefold())]
+    if not matching_offers:raise HTTPException(422,f'No saved retailer offer matches {body.currency} for this listing')
     if body.selected_options:
-        product_details(body.product_id[9:],body.selected_options)
+        enrich_selected_listing(selected,product_details(body.product_id[9:],body.selected_options))
     if body.retailer_domain and not re.fullmatch(r'(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,63}',body.retailer_domain):raise HTTPException(422,'Invalid retailer domain')
     with lock:
         participant=auth(r,request)
         selection=[{'name':name,'label':label} for name,label in sorted(body.selected_options.items())]
-        scope=json.dumps({'product_id':body.product_id[9:],'domains':[body.retailer_domain] if body.retailer_domain else [],'selection':selection},sort_keys=True)
+        scope=json.dumps({'product_id':body.product_id[9:],'currency':body.currency,'domains':[body.retailer_domain] if body.retailer_domain else [],'selection':selection},sort_keys=True)
         existing=db.execute('SELECT subscription_id FROM channel3_watches WHERE scope=? AND status IN (?,?) LIMIT 1',(scope,'active','paused')).fetchone()
         if existing:subscription_id=existing[0]
         else:
@@ -862,7 +870,7 @@ def create_price_watch(r:str,body:WatchRequest,request:Request):
             result=channel3_request('/v1/product-subscriptions',payload)
             subscription_id=result.get('subscription_id')
             if not subscription_id:raise HTTPException(502,'Channel3 did not confirm a product subscription')
-        watch={'id':secrets.token_urlsafe(16),'room':r,'participant':participant,'product_id':body.product_id,'subscription_id':subscription_id,'scope':scope,'threshold_cents':body.threshold_cents,'status':'active','created_at':datetime.now(timezone.utc).isoformat()}
+        watch={'id':secrets.token_urlsafe(16),'room':r,'participant':participant,'product_id':body.product_id,'subscription_id':subscription_id,'scope':scope,'threshold_cents':body.threshold_cents,'currency':body.currency,'status':'active','created_at':datetime.now(timezone.utc).isoformat()}
         db.execute('INSERT INTO channel3_watches VALUES(?,?,?,?,?,?,?,?,?)',(watch['id'],r,participant,body.product_id,subscription_id,scope,body.threshold_cents,'active',json.dumps(watch)))
         db.commit()
         return watch
@@ -1482,7 +1490,7 @@ def process_channel3_event(event_id:str,request:Request):
         if watch['scope'] in offers_by_scope:continue
         product=product_details(watch['product_id'].removeprefix('channel3:'),
             {item['name']:item['label'] for item in scope.get('selection',[])})
-        offers_by_scope[watch['scope']]=[o for o in product.get('offers',[]) if o.get('currency')=='USD']
+        offers_by_scope[watch['scope']]=offers_in_watch_currency(product.get('offers',[]),scope)
     with lock:
         for row in watches:
             watch=json.loads(row[0])
@@ -1494,7 +1502,7 @@ def process_channel3_event(event_id:str,request:Request):
             availability_hit=event['type'] in ('offer.availability.changed','offer.created') and available
             if not price_hit and not availability_hit:continue
             room=load(watch['room'])
-            alert={'id':event_id+':'+watch['id'],'participant':watch['participant'],'product_id':watch['product_id'],'price_cents':best,'currency':'USD','observed_at':datetime.now(timezone.utc).isoformat(),
+            alert={'id':event_id+':'+watch['id'],'participant':watch['participant'],'product_id':watch['product_id'],'price_cents':best,'currency':scope.get('currency','USD'),'observed_at':datetime.now(timezone.utc).isoformat(),
                 'kind':'price' if price_hit else 'availability',
                 'message':'A watched offer is at or below your price threshold. Check the retailer before buying.' if price_hit else 'Channel3 detected an in-stock retailer offer. Check the current listing before buying.'}
             alerts=room.setdefault('price_watch_alerts',[])
@@ -1916,7 +1924,9 @@ def visual_discovery(r:str,body:VisualDiscovery,request:Request):
 
 @app.get('/api/rooms/{r}/discovery/{product_id}')
 def detail(r:str,product_id:str,request:Request):
-    auth(r,request); return product_details(product_id)
+    selected=room_channel3_product(r,product_id,request)
+    fresh=product_details(product_id)
+    return enrich_selected_listing(selected,fresh)
 
 @app.post('/api/rooms/{r}/shortlist/restore')
 def restore_shortlist(r:str,request:Request):
@@ -1944,6 +1954,7 @@ def room_channel3_product(r,product_id,request):
     with lock:
         auth(r,request);state=load(r)
         product=next((p for p in state.get('discovery',[]) if p.get('provider_id')==product_id and p.get('source','CHANNEL3_LIVE')=='CHANNEL3_LIVE'),None)
+        product=product or next((p for p in (state.get('shortlisted_products') or {}).values() if p.get('provider_id')==product_id and p.get('source','CHANNEL3_LIVE')=='CHANNEL3_LIVE'),None)
         if not product:
             bundle=state.get('smart_bundle') or {}
             for selection in (bundle.get('selected'),bundle.get('saved')):
@@ -1952,23 +1963,43 @@ def room_channel3_product(r,product_id,request):
         if not product:raise HTTPException(404,'Product is not in this room')
         return product
 
+def enrich_selected_listing(selected,fresh):
+    """Use fetched specs only for the same provider product; retain the chosen listing snapshot."""
+    if not isinstance(fresh,dict) or fresh.get('id')!=selected.get('id'):
+        raise HTTPException(502,'Channel3 details did not match the selected listing')
+    result={**fresh,**selected}
+    result['attributes']={**(fresh.get('attributes') or {}),**(selected.get('attributes') or {})}
+    result['key_features']=selected.get('key_features') or fresh.get('key_features') or []
+    result['variants']=selected.get('variants') or fresh.get('variants')
+    result['offers']=selected.get('offers') or []
+    for field in ('id','provider_id','name','brand','provenance','source','category','spatial_eligible','image','retrieved_at'):
+        if selected.get(field) is not None:result[field]=selected[field]
+    return result
+
+def offers_in_selected_market(selected,offers):
+    currency=next((offer.get('currency') for offer in selected.get('offers',[]) if offer.get('currency')),None)
+    return [offer for offer in offers if offer.get('currency')==currency] if currency else list(offers)
+
 @app.get('/api/rooms/{r}/products/{product_id}/seller-lens')
 def seller_lens(r:str,product_id:str,request:Request):
-    room_channel3_product(r,product_id,request)
-    product=product_details(product_id)
-    offers=sorted((o for o in product['offers'] if isinstance(o.get('price_cents'),int)),
+    selected=room_channel3_product(r,product_id,request)
+    fresh=product_details(product_id)
+    product=enrich_selected_listing(selected,fresh)
+    offers=sorted((o for o in offers_in_selected_market(selected,fresh['offers']) if isinstance(o.get('price_cents'),int)),
                   key=lambda o:(o['price_cents'],o['retailer']))
-    return {'product':product,'offers':offers,'lowest_price_cents':offers[0]['price_cents'] if offers else None,
+    return {'product':product,'offers':offers,'market_currency':offers[0]['currency'] if offers else None,'lowest_price_cents':offers[0]['price_cents'] if offers else None,
             'observed_at':product['retrieved_at'],'caveat':'Listed prices exclude unknown delivery, taxes and fees.'}
 
 @app.get('/api/rooms/{r}/products/{product_id}/retailer-link')
 def retailer_link(r:str,product_id:str,retailer:str,request:Request):
-    room_channel3_product(r,product_id,request)
+    selected=room_channel3_product(r,product_id,request)
     actor=auth(r,request)
     attribution_id=hashlib.sha256((r+'\0'+actor).encode()).hexdigest()[:40]
-    product=product_details(product_id,user_id=attribution_id)
+    product=enrich_selected_listing(selected,product_details(product_id,user_id=attribution_id))
     require_checkout_mode(product.get('source',''),CheckoutMode.EXTERNAL_RETAILER)
-    offer=next((o for o in product['offers'] if o['retailer'].casefold()==retailer.casefold() and o.get('url')),
+    selected_offer=next((o for o in selected.get('offers',[]) if o.get('retailer','').casefold()==retailer.casefold()),None)
+    if not selected_offer:raise HTTPException(404,'Retailer was not part of the selected listing')
+    offer=next((o for o in product['offers'] if o['retailer'].casefold()==retailer.casefold() and o.get('currency')==selected_offer.get('currency') and o.get('url')),
                None)
     if not offer:raise HTTPException(404,'Current retailer offer unavailable')
     return {'checkout_mode':CheckoutMode.EXTERNAL_RETAILER,'url':offer['url'],'price_cents':offer['price_cents'],'currency':offer['currency'],

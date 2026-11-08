@@ -12,7 +12,7 @@ def test_price_watch_alert_creates_owned_alternative_draft_without_payment(monke
     room=client.post('/api/rooms',json={'name':'Buyer','initial_request':'Desk under $300'}).json()['room']['id']
     state=main.load(room)
     state['discovery']=[{'id':'channel3:real-desk','provider_id':'real-desk','source':'CHANNEL3_LIVE',
-        'name':'Compact desk','category':'Desks','offers':[],'retrieved_at':main.time.time()}]
+        'name':'Compact desk','category':'Desks','offers':[{'retailer':'shop.example','url':'https://shop.example/desk','currency':'USD','price_cents':10000}],'retrieved_at':main.time.time()}]
     state['budget']=30000;main.save(room,state)
     watch=client.post(f'/api/rooms/{room}/price-watches',json={'product_id':'channel3:real-desk','threshold_cents':10000}).json()
     alert_id='event-1:'+watch['id']

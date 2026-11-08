@@ -124,6 +124,21 @@ def test_legacy_shortlist_recovers_channel3_products_after_the_old_search_is_gon
     result=main.restore_shortlist('room',request)
     assert result['shortlisted_products'][old['id']]['name']=='Saved chair'
 
+def test_product_detail_enrichment_preserves_the_selected_listing_and_offer():
+    import app.main as main
+    import pytest
+    selected={'id':'channel3:chair','provider_id':'chair','name':'Debenhams chair','provenance':'channel3',
+        'offers':[{'retailer':'Debenhams','price_cents':8742,'currency':'GBP','url':'https://debenhams.example/chair'}],
+        'attributes':{},'key_features':[]}
+    fresh={'id':'channel3:chair','name':'Alternate title','offers':[{'retailer':'Best Buy','price_cents':13499,'currency':'USD'}],
+        'attributes':{'material':'mesh'},'key_features':['Adjustable lumbar']}
+    result=main.enrich_selected_listing(selected,fresh)
+    assert result['name']=='Debenhams chair'
+    assert result['offers']==selected['offers']
+    assert result['attributes']=={'material':'mesh'}
+    assert main.offers_in_selected_market(selected,[{'currency':'USD','price_cents':100},{'currency':'GBP','price_cents':8742}])==[{'currency':'GBP','price_cents':8742}]
+    with pytest.raises(main.HTTPException):main.enrich_selected_listing(selected,{**fresh,'id':'channel3:other-chair'})
+
 def test_missing_discovery_key_is_explicit(monkeypatch):
     monkeypatch.delenv('CHANNEL3_API_KEY',raising=False)
     a=TestClient(app); result=a.post('/api/rooms',json={'name':'A'}).json()

@@ -68,18 +68,32 @@ export default function DecisionBoard({
     return () => { active = false; };
   }, [room.id, selectedIds]);
   const rows = selected.map((original) => {
-    const p = details[original.id] || original;
-    const offer = p.offers?.[0];
+    const fresh = details[original.id];
+    const sameListing = fresh?.id === original.id;
+    const p = {
+      ...original,
+      attributes: {...(sameListing ? fresh.attributes || {} : {}), ...(original.attributes || {})},
+      key_features: original.key_features?.length ? original.key_features : sameListing ? fresh.key_features || [] : [],
+      variants: original.variants || (sameListing ? fresh.variants : null),
+    };
+    const savedOffer = original.offers?.[0];
+    const matchingFreshOffer = sameListing && savedOffer
+      ? fresh.offers?.find((offer:any) => offer.retailer === savedOffer.retailer && offer.currency === savedOffer.currency && offer.url === savedOffer.url)
+      : null;
+    const offer = savedOffer ? {...savedOffer, dimensions:savedOffer.dimensions || matchingFreshOffer?.dimensions} : null;
+    const variant = (p.variants?.selected || []).map((item:any)=>`${item.name}: ${item.label}`).join(" · ") || "Not provided";
     return ({
-    name: p.name,
+    name: original.name,
     price:
-      p.price != null
-        ? "$" + (p.price / 100).toFixed(2)
-        : offer?.price_cents != null
+      offer?.price_cents != null
           ? offer.currency +
             " " +
             (offer.price_cents / 100).toFixed(2)
+          : original.price != null
+            ? (original.currency || "USD") + " " + (original.price / 100).toFixed(2)
           : "Not provided",
+    retailer: offer?.retailer || "Not provided",
+    variant,
     dimensions: formatDimensions(offer?.dimensions) || formatDimensions(attributeValue(p, ["dimensions", "size", "productdimensions"])) || "Not provided",
     seating: attribute(p, ["seatingcapacity", "seatcapacity", "numberofseats", "seats"]) || "Not provided",
     material: attribute(p, ["material", "materials", "upholstery", "upholsterymaterial", "fabric"]) || "Not provided",
@@ -123,6 +137,8 @@ export default function DecisionBoard({
             [
               "name",
               "price",
+              "retailer",
+              "variant",
               "dimensions",
               "seating",
               "material",

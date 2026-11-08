@@ -34,6 +34,7 @@ def test_webhook_worker_refreshes_offer_and_alerts_watch_owner(monkeypatch):
     monkeypatch.setattr(discovery,'product_details',lambda id,options=None:{'offers':[{'retailer':'store.example','price_cents':8000,'currency':'USD'}]})
     client=TestClient(main.app)
     room=client.post('/api/rooms',json={'name':'Alice'}).json()['room']['id']
+    state=main.load(room);state['discovery']=[{'id':'channel3:worker-product','provider_id':'worker-product','name':'Product','source':'CHANNEL3_LIVE','offers':[{'retailer':'store.example','price_cents':8000,'currency':'USD'}]}];main.save(room,state)
     watch=client.post(f'/api/rooms/{room}/price-watches',json={'product_id':'channel3:worker-product','threshold_cents':9000}).json()
     event_id='msg-worker-local'
     main.db.execute('INSERT INTO channel3_webhook_events VALUES(?,?,?,?)',(event_id,'offer.price.changed',
@@ -55,6 +56,7 @@ def test_availability_event_alerts_without_a_price(monkeypatch):
     monkeypatch.setattr(discovery,'product_details',lambda id,options=None:{'offers':[{'retailer':'store.example','price_cents':None,'currency':'USD','availability':'InStock'}]})
     client=TestClient(main.app)
     room=client.post('/api/rooms',json={'name':'Alice'}).json()['room']['id']
+    state=main.load(room);state['discovery']=[{'id':'channel3:available-product','provider_id':'available-product','name':'Product','source':'CHANNEL3_LIVE','offers':[{'retailer':'store.example','price_cents':None,'currency':'USD','availability':'InStock'}]}];main.save(room,state)
     assert client.post(f'/api/rooms/{room}/price-watches',json={'product_id':'channel3:available-product','threshold_cents':9000}).status_code==200
     event_id='msg-availability-local'
     main.db.execute('INSERT INTO channel3_webhook_events VALUES(?,?,?,?)',(event_id,'offer.availability.changed',
