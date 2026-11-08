@@ -117,6 +117,11 @@ def test_buyer_authorizes_before_merchant_offer_and_settles_lower_amount(monkeyp
     assert client.post(base+'/preauthorize/authorize').json()['status']=='authorized'
     assert not queued  # No merchant offer exists yet.
     merchant_headers={'X-ShopSide-Merchant-Token':token}
+    portal=client.get('/api/merchant/me',headers=merchant_headers)
+    assert portal.status_code==200,portal.text
+    assert portal.json()['metrics']['authorized_holds']==sum(1 for order in portal.json()['orders'] if order['status']=='authorized' and order.get('paypal_authorization_id'))
+    assert next(order for order in portal.json()['orders'] if order['id']==payment['id'])['quote_id'] is None
+    assert next(op for op in portal.json()['opportunities'] if op['id']==opportunity_id)['buyer_authorization']['status']=='authorized'
     proposed=client.post(f'/api/merchant/opportunities/{opportunity_id}/action',headers=merchant_headers,json={
         'command_id':uuid.uuid4().hex,'action':'generate','price_cents':27000,'explanation':'Approved workspace bundle.'})
     assert proposed.status_code==200,proposed.text
