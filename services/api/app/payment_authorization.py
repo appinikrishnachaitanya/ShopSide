@@ -47,6 +47,8 @@ def require_authorized_scope(payment,room,offer,consent):
         raise HTTPException(409,'Buyer policy changed')
     if payment.get('policy_version') and consent.get('policy_version')!=payment['policy_version']:
         raise HTTPException(409,'Buyer policy version changed')
+    if payment.get('shipping_max_cents',0)!=0 or payment.get('tax_max_cents',0)!=0 or consent.get('shipping_max_cents',0)!=0 or consent.get('tax_max_cents',0)!=0:
+        raise HTTPException(409,'Shipping or tax terms changed')
     if payment.get('provisional'):
         if offer.get('opportunity_id')!=payment.get('opportunity_id'):
             raise HTTPException(409,'Merchant opportunity changed')
