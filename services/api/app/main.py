@@ -922,6 +922,10 @@ def merchant_offer_checkout(r:str,offer_id:str,request:Request):
         if not offer or offer['status']!='ACCEPTED':raise HTTPException(409,'Accept the merchant offer first')
         if offer['expires_at']<=merchant_service.now():raise HTTPException(409,'Merchant offer expired')
         merchant_id=offer['merchant_id']
+        opportunity=merchant_service.scoped_opportunity(db,merchant_id,offer['opportunity_id'])
+        consent=s.get('seller_offers') or {}
+        if not consent.get('enabled') or consent.get('demand_key')!=opportunity.get('demand_key') or consent.get('expires_at',0)<=merchant_service.now():
+            raise HTTPException(409,'Seller-offer consent has expired or been revoked')
         m=merchant_service.merchant(db,merchant_id)
         if not m['opt_in'] or not m['active']:raise HTTPException(409,'Merchant is unavailable')
         products={p['product_id']:p for p in merchant_service.product_rows(db,merchant_id) if p.get('source')=='SHOPSIDE_SANDBOX'}
@@ -1524,7 +1528,16 @@ def seller_consent(r:str,body:SellerConsent,request:Request):
             else:
                 s['seller_offers']={'enabled':True,'demand_key':secrets.token_urlsafe(12),'expires_at':merchant_service.now()+3600,
                     'status':'waiting','auto_accept_limit_cents':body.auto_accept_limit_cents}
+            policy=s['seller_offers']
+            history=s.setdefault('seller_policy_history',[])
+            history.append({'version':len(history)+1,'actor':actor,'created_at':merchant_service.now(),
+                'expires_at':policy['expires_at'],'enabled':True,'auto_accept_limit_cents':policy.get('auto_accept_limit_cents'),
+                'scope':'sandbox_merchant_quotes','payment_authorized':False})
+            policy['policy_version']=len(history)
         else:
+            history=s.setdefault('seller_policy_history',[])
+            history.append({'version':len(history)+1,'actor':actor,'created_at':merchant_service.now(),
+                'enabled':False,'scope':'sandbox_merchant_quotes','payment_authorized':False})
             s['seller_offers']={'enabled':False,'status':'off'}
             s.pop('seller_agent',None)
             for offer in s.get('flash_offers',[]):

@@ -110,6 +110,18 @@ def test_unaccepted_or_external_offer_cannot_checkout():
     main.save(room_id,state)
     assert client.post(f'/api/rooms/{room_id}/seller-offers/{offer["id"]}/checkout').status_code==409
 
+def test_accepted_offer_cannot_start_checkout_after_consent_revoked_or_expired():
+    for change in ('revoked','expired'):
+        client,room_id,offer,_=accepted_offer()
+        state=main.load(room_id)
+        if change=='revoked':state['seller_offers']['enabled']=False
+        else:state['seller_offers']['expires_at']=main.merchant_service.now()-1
+        main.save(room_id,state)
+        response=client.post(f'/api/rooms/{room_id}/seller-offers/{offer["id"]}/checkout')
+        assert response.status_code==409
+        assert 'consent' in response.json()['detail'].lower()
+        assert client.get(f'/api/rooms/{room_id}').json()['checkout'] is None
+
 
 def test_cancel_unused_merchant_quote_releases_stock():
     client,room_id,offer,_=accepted_offer()

@@ -79,6 +79,18 @@ def test_quote_review_accept_counter_dismiss_and_invitation(monkeypatch):
     assert friend.get(base).json()['flash_offers'][0]['status']=='ACCEPTED'
     assert friend.get(base).json().get('checkout') is None
 
+def test_seller_consent_policy_records_changes_without_payment_authority():
+    buyer,_,rid=room();base='/api/rooms/'+rid
+    enabled=buyer.post(base+'/seller-offers/consent',json={'enabled':True,'auto_accept_limit_cents':10000,'command_id':'policy-enable'}).json()
+    assert enabled['seller_policy_history'][-1]['auto_accept_limit_cents']==10000
+    assert enabled['seller_policy_history'][-1]['payment_authorized'] is False
+    updated=buyer.post(base+'/seller-offers/consent',json={'enabled':True,'auto_accept_limit_cents':9000,'command_id':'policy-update'}).json()
+    assert updated['seller_offers']['policy_version']==2
+    assert updated['seller_policy_history'][0]['auto_accept_limit_cents']==10000
+    revoked=buyer.post(base+'/seller-offers/consent',json={'enabled':False,'command_id':'policy-revoke'}).json()
+    assert revoked['seller_policy_history'][-1]['enabled'] is False
+    assert revoked['seller_offers']['enabled'] is False
+
 def test_expired_quote_and_merchant_optout(monkeypatch):
     ids=setup(monkeypatch);buyer,_,rid=room();base='/api/rooms/'+rid
     m=merchant(main.db,ids[0][0]);m['opt_in']=False;put(main.db,'merchants',ids[0][0],m)
