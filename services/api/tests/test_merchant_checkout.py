@@ -148,6 +148,7 @@ def test_paypal_amount_mismatch_never_completes_merchant_order(monkeypatch):
 def test_webhook_requires_verified_signature_and_deduplicates(monkeypatch):
     client=TestClient(main.app)
     monkeypatch.setenv('PAYPAL_WEBHOOK_ID','sandbox-webhook')
+    assert client.post('/api/paypal/webhook',content='{',headers={'content-type':'application/json'}).status_code==400
     headers={name:'test-value' for name in ('paypal-auth-algo','paypal-cert-url','paypal-transmission-id',
         'paypal-transmission-sig','paypal-transmission-time')}
     event={'id':'event-'+uuid.uuid4().hex,'event_type':'PAYMENT.CAPTURE.COMPLETED'}

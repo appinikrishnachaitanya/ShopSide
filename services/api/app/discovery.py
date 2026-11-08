@@ -3,6 +3,7 @@ import os,time,threading,re,contextvars,logging
 from decimal import Decimal
 from typing import Any
 from urllib.parse import urlparse
+from urllib.parse import urlencode
 import httpx
 from pydantic import BaseModel,Field,ConfigDict
 from fastapi import HTTPException
@@ -19,6 +20,9 @@ class AdvancedSearch(Search):
     page_token:str|None=Field(default=None,max_length=2000)
     country:str|None=Field(default=None,pattern='^[A-Z]{2}$')
     currency:str|None=Field(default=None,pattern='^[A-Z]{3}$')
+    language:str|None=Field(default=None,pattern='^[a-z]{2}$')
+    brand:str|None=Field(default=None,min_length=1,max_length=100)
+    retailer_domain:str|None=Field(default=None,min_length=3,max_length=253,pattern=r'^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$')
 class Price(BaseModel):
     price:Decimal=Field(ge=0)
     currency:str=Field(min_length=3,max_length=3)
@@ -153,6 +157,7 @@ def advanced_search(body:AdvancedSearch):
     payload={'query':body.query,'limit':12,'config':{'mode':body.mode}}
     if body.country:payload['config']['country']=body.country
     if body.currency:payload['config']['currency']=body.currency
+    if body.language:payload['config']['language']=body.language
     if body.page_token:payload['page_token']=body.page_token
     filters={}
     price={}
@@ -160,6 +165,14 @@ def advanced_search(body:AdvancedSearch):
     if body.max_price is not None:price['max_price']=body.max_price
     if price:filters['price']=price
     if body.availability:filters['availability']=body.availability
+    if body.brand:
+        response=request('/v1/brands/search?'+urlencode({'query':body.brand.strip(),'limit':20}))
+        brands=response.get('brands') if isinstance(response,dict) else None
+        if not isinstance(brands,list):raise HTTPException(502,'Channel3 brand lookup returned an invalid response')
+        matches=[brand for brand in brands if isinstance(brand,dict) and isinstance(brand.get('name'),str) and brand['name'].casefold()==body.brand.strip().casefold() and isinstance(brand.get('id'),str) and brand['id']]
+        if len(matches)!=1:raise HTTPException(422,'Brand not found uniquely on Channel3. Check its exact name or search without a brand filter.')
+        filters['brand_ids']=[matches[0]['id']]
+    if body.retailer_domain:filters['website_ids']=[body.retailer_domain.lower()]
     if filters:payload['filters']=filters
     try:
         result=request('/v1/search',payload)

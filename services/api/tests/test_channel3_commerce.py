@@ -61,3 +61,25 @@ def test_malformed_price_statistics_degrade_to_unavailable(monkeypatch):
     monkeypatch.setattr(channel3_sdk,'Channel3',Client)
     result=discovery.price_history('shirt')
     assert result['available'] is False
+def test_structured_brand_and_retailer_search_filters(monkeypatch):
+    from app import discovery
+    calls=[]
+    def fake_request(path,payload=None):
+        calls.append((path,payload))
+        if path.startswith('/v1/brands/search?'):return {'brands':[{'id':'nike-id','name':'Nike'}]}
+        return {'products':[]}
+    monkeypatch.setattr(discovery,'request',fake_request)
+    body=discovery.AdvancedSearch(query='running shoes',revision=0,command_id='test',brand='Nike',retailer_domain='nike.com',max_price=150,availability=['InStock'],country='GB',currency='GBP',language='en')
+    discovery.advanced_search(body)
+    assert calls[1][1]['filters']=={'price':{'max_price':150},'availability':['InStock'],'brand_ids':['nike-id'],'website_ids':['nike.com']}
+    assert calls[1][1]['config']=={'mode':'default','country':'GB','currency':'GBP','language':'en'}
+
+
+def test_unknown_brand_does_not_silently_broaden_search(monkeypatch):
+    import pytest
+    from fastapi import HTTPException
+    from app import discovery
+    monkeypatch.setattr(discovery,'request',lambda *args,**kwargs:{'brands':[]})
+    with pytest.raises(HTTPException) as error:
+        discovery.advanced_search(discovery.AdvancedSearch(query='shoes',revision=0,command_id='test',brand='Unknown'))
+    assert error.value.status_code==422

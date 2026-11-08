@@ -113,6 +113,9 @@ export default function Home() {
   const [maxPrice, setMaxPrice] = useState("");
   const [inStock, setInStock] = useState(false);
   const [searchMode, setSearchMode] = useState("default");
+  const [searchLocale, setSearchLocale] = useState("US:USD:en");
+  const [resultBrand, setResultBrand] = useState("");
+  const [resultRetailer, setResultRetailer] = useState("");
   const [copied, CopyDone] = useState(false);
   const [cartOpen, setCartOpen] = useState(false),
     [notice, setNotice] = useState("");
@@ -408,7 +411,9 @@ export default function Home() {
   const liveDealOffers = (room?.flash_offers || []).filter((offer: any) => ["OFFER_PUBLISHED", "COUNTERED", "ACCEPTED"].includes(offer.status));
   const dealPromptKey = room ? `${room.id}:${liveDealOffers.at(-1)?.id || "intro"}` : "";
   useEffect(() => {
-    if (dealPromptKey) setHiddenDealPromptKey(sessionStorage.getItem(`shopside-deal-prompt:${dealPromptKey}`) ? dealPromptKey : "");
+    if (!dealPromptKey) return;
+    try { setHiddenDealPromptKey(sessionStorage.getItem(`shopside-deal-prompt:${dealPromptKey}`) ? dealPromptKey : ""); }
+    catch { setHiddenDealPromptKey(""); }
   }, [dealPromptKey]);
   useEffect(() => {
     if (workspaceView !== "plan" || !highlightPlanDeals) return;
@@ -417,7 +422,7 @@ export default function Home() {
   }, [workspaceView, highlightPlanDeals]);
   function dismissDealPrompt() {
     if (!dealPromptKey) return;
-    sessionStorage.setItem(`shopside-deal-prompt:${dealPromptKey}`, "1");
+    try { sessionStorage.setItem(`shopside-deal-prompt:${dealPromptKey}`, "1"); } catch {}
     setHiddenDealPromptKey(dealPromptKey);
   }
   const showRoomOption = Boolean(room && (
@@ -455,8 +460,11 @@ export default function Home() {
         max_price: maxPrice ? Number(maxPrice) : undefined,
         availability: inStock ? ["InStock"] : [],
         mode: searchMode,
-        country: room.move_in?.mission?.country || undefined,
-        currency: room.move_in?.mission?.currency || undefined,
+        brand: resultBrand.trim() || undefined,
+        retailer_domain: resultRetailer.trim() || undefined,
+        country: searchLocale.split(":")[0],
+        currency: searchLocale.split(":")[1],
+        language: searchLocale.split(":")[2],
         page_token: pageToken,
         revision: room.revision,
         command_id: crypto.randomUUID(),
@@ -685,12 +693,16 @@ export default function Home() {
                     {searching ? "Searching…" : "Search Channel3"} <ArrowRight size={15} />
                   </button>
                 </form>
-                <details className="filter-details"><summary>Filters <span>Price · availability · mode</span></summary><div className="search-filters">
+                <details className="filter-details"><summary>Filters <span>Price · availability · brand · retailer</span></summary><div className="search-filters">
                   <label>Min price <input aria-label="Minimum price" type="number" min="0" value={minPrice} onChange={e => setMinPrice(e.target.value)} /></label>
                   <label>Max price <input aria-label="Maximum price" type="number" min="0" value={maxPrice} onChange={e => setMaxPrice(e.target.value)} /></label>
                   <label><input type="checkbox" checked={inStock} onChange={e => setInStock(e.target.checked)} /> In stock</label>
                   <label>Search mode <select value={searchMode} onChange={e => setSearchMode(e.target.value)}><option value="default">Standard</option><option value="agentic">Agentic</option><option value="keyword">Keyword</option></select></label>
+                  <label>Search market <select value={searchLocale} onChange={e=>setSearchLocale(e.target.value)}><option value="US:USD:en">United States · USD</option><option value="GB:GBP:en">United Kingdom · GBP</option><option value="CA:CAD:en">Canada · CAD</option><option value="AU:AUD:en">Australia · AUD</option></select></label>
+                  <label>Brand <input value={resultBrand} onChange={e=>setResultBrand(e.target.value)} placeholder="e.g. Nike" maxLength={100}/></label>
+                  <label>Retailer domain <input value={resultRetailer} onChange={e=>setResultRetailer(e.target.value)} placeholder="e.g. nike.com" maxLength={253}/></label>
                 </div>
+                <p>Filters apply to your next Channel3 search. Enter the brand’s exact name and the retailer’s domain.</p>
                 </details>
                 {room.search_page_token && room.search_query === query && <button onClick={() => discover(room.search_page_token)}>Next results</button>}
                 {room.mode === "move_in" && <button className="search-from-brief" disabled={!online || searching} onClick={findForMission}><Sparkles size={15}/> Find matches from your plan</button>}

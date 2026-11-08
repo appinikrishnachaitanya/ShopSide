@@ -871,7 +871,8 @@ def payment_config(): return {'client_id':os.getenv('PAYPAL_CLIENT_ID'),'currenc
 async def paypal_webhook(request:Request):
     webhook_id=os.getenv('PAYPAL_WEBHOOK_ID')
     if not webhook_id:raise HTTPException(503,'PayPal webhook is not configured')
-    event=await request.json()
+    try: event=await request.json()
+    except (ValueError, UnicodeDecodeError): raise HTTPException(400,'Invalid PayPal event JSON')
     event_id=event.get('id') if isinstance(event,dict) else None
     if not isinstance(event_id,str) or not event_id:raise HTTPException(400,'Invalid PayPal event')
     required=('paypal-auth-algo','paypal-cert-url','paypal-transmission-id','paypal-transmission-sig','paypal-transmission-time')
@@ -1228,6 +1229,10 @@ def refined_search(r:str,body:AdvancedSearch,request:Request):
         state=load(r)
         if body.command_id in state['commands']: return {'ok':True}
         if state['revision']!=body.revision: raise HTTPException(409,'Room changed; refresh and retry')
+        if body.page_token:
+            filters=state.get('search_filters') or {}
+            if body.page_token!=state.get('search_page_token') or body.query!=state.get('search_query') or any(filters.get(key)!=value for key,value in {'min_price':body.min_price,'max_price':body.max_price,'availability':body.availability,'mode':body.mode,'brand':body.brand,'retailer_domain':body.retailer_domain,'country':body.country,'currency':body.currency,'language':body.language}.items()):
+                raise HTTPException(409,'Search filters changed. Run a new search before loading the next page.')
     result=advanced_search(body)
     with lock:
         state=load(r)
@@ -1235,7 +1240,7 @@ def refined_search(r:str,body:AdvancedSearch,request:Request):
         state['discovery']=result['products']
         state['search_query']=body.query
         state['search_page_token']=result['next_page_token']
-        state['search_filters']={'min_price':body.min_price,'max_price':body.max_price,'availability':body.availability,'mode':body.mode}
+        state['search_filters']={'min_price':body.min_price,'max_price':body.max_price,'availability':body.availability,'mode':body.mode,'brand':body.brand,'retailer_domain':body.retailer_domain,'country':body.country,'currency':body.currency,'language':body.language}
         state['commands'].append(body.command_id);state['revision']+=1;save(r,state)
     return result
 
