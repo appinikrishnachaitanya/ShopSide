@@ -69,6 +69,21 @@ def relevant_results(query, products):
     if re.search(r'\b(?:tables?|nightstands?|covers?|slipcovers?)\b', query, re.I): return products
     accessory=re.compile(r'\b(?:nightstands?|end\s+tables?|side\s+tables?|coffee\s+tables?|console\s+tables?|sofa\s+tables?|slipcovers?|sofa\s+covers?)\b', re.I)
     return [p for p in products if not accessory.search(p['name'])]
+
+def within_price_range(products, currency, min_price, max_price):
+    """Keep products with at least one priced offer in the selected market and range."""
+    minimum=Decimal(str(min_price)) if min_price is not None else None
+    maximum=Decimal(str(max_price)) if max_price is not None else None
+    filtered=[]
+    for product in products:
+        for offer in product.get('offers') or []:
+            cents=offer.get('price_cents')
+            if offer.get('currency')!=currency or type(cents) is not int or cents<0:continue
+            amount=Decimal(cents)/100
+            if (minimum is None or amount>=minimum) and (maximum is None or amount<=maximum):
+                filtered.append(product)
+                break
+    return filtered
 cache={}; guard=threading.Lock()
 class Channel3Budget:
     """Counts real HTTP attempts across threads, including transient retries."""
@@ -167,6 +182,8 @@ def price_history(id,days=90):
 def advanced_search(body:AdvancedSearch):
     if body.min_price is not None and body.max_price is not None and body.min_price>body.max_price:
         raise HTTPException(422,'Minimum price exceeds maximum price')
+    if (body.min_price is not None or body.max_price is not None) and not body.currency:
+        raise HTTPException(422,'A market currency is required when filtering by price')
     if any(v not in ('InStock','OutOfStock') for v in body.availability):
         raise HTTPException(422,'Invalid availability')
     payload={'query':body.query,'limit':12,'config':{'mode':body.mode}}
@@ -200,5 +217,8 @@ def advanced_search(body:AdvancedSearch):
     if filters:payload['filters']=filters
     try:
         result=request('/v1/search',payload)
-        return {'products':relevant_results(body.query,[normalize(p) for p in result['products']]),'next_page_token':result.get('next_page_token')}
+        products=relevant_results(body.query,[normalize(p) for p in result['products']])
+        if body.min_price is not None or body.max_price is not None:
+            products=within_price_range(products,body.currency,body.min_price,body.max_price)
+        return {'products':products,'next_page_token':result.get('next_page_token')}
     except (ValueError,KeyError) as exc:raise HTTPException(502,'Channel3 response did not match its documented schema') from exc

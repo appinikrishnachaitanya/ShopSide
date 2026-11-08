@@ -75,6 +75,31 @@ def test_structured_brand_and_retailer_search_filters(monkeypatch):
     assert calls[1][1]['config']=={'mode':'default','country':'GB','currency':'GBP','language':'en'}
 
 
+def test_market_price_filter_uses_selected_currency_and_enforces_returned_offer_range(monkeypatch):
+    from app import discovery
+    calls=[]
+    def provider(path,payload=None):
+        calls.append((path,payload))
+        return {'products':[
+            {'id':'in-range','title':'GBP under cap','offers':[{'url':'https://uk.example/a','domain':'uk.example','price':{'price':149,'currency':'GBP'}}]},
+            {'id':'over-cap','title':'GBP over cap','offers':[{'url':'https://uk.example/b','domain':'uk.example','price':{'price':151,'currency':'GBP'}}]},
+            {'id':'wrong-currency','title':'USD price','offers':[{'url':'https://us.example/c','domain':'us.example','price':{'price':50,'currency':'USD'}}]},
+        ],'next_page_token':None}
+    monkeypatch.setattr(discovery,'request',provider)
+    body=discovery.AdvancedSearch(query='shoes',revision=0,command_id='gb-budget',max_price=150,country='GB',currency='GBP')
+    result=discovery.advanced_search(body)
+    assert calls[0][1]['config']=={'mode':'default','country':'GB','currency':'GBP'}
+    assert calls[0][1]['filters']=={'price':{'max_price':150}}
+    assert [item['provider_id'] for item in result['products']]==['in-range']
+
+
+def test_price_filter_requires_an_explicit_market_currency():
+    with pytest.raises(HTTPException) as error:
+        discovery.advanced_search(discovery.AdvancedSearch(query='shoes',revision=0,command_id='ambiguous-budget',max_price=150))
+    assert error.value.status_code==422
+    assert 'currency is required' in error.value.detail
+
+
 def test_unknown_brand_does_not_silently_broaden_search(monkeypatch):
     import pytest
     from fastapi import HTTPException

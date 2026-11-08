@@ -121,6 +121,12 @@ export default function Home() {
   const [resultCondition, setResultCondition] = useState("");
   const [resultColor, setResultColor] = useState("");
   const [visualUrl, setVisualUrl] = useState("");
+  const searchCurrency = searchLocale.split(":")[1] || "USD";
+  const roomBudgetCents = room?.move_in?.mission?.budget_cents ?? room?.shopping_intent?.budget_cents ?? room?.budget ?? null;
+  const roomBudgetCurrency = room?.move_in?.mission?.currency ?? room?.shopping_intent?.currency ?? "USD";
+  const resultCurrency = room?.search_filters?.currency;
+  const marketPriceCap = maxPrice.trim() ? Number(maxPrice) :
+    roomBudgetCents != null && roomBudgetCurrency === searchCurrency ? roomBudgetCents / 100 : undefined;
   const [copied, CopyDone] = useState(false);
   const [cartOpen, setCartOpen] = useState(false),
     [notice, setNotice] = useState("");
@@ -462,7 +468,7 @@ export default function Home() {
       await api("rooms/" + room.id + "/search", {
         query,
         min_price: minPrice ? Number(minPrice) : undefined,
-        max_price: maxPrice ? Number(maxPrice) : undefined,
+        max_price: marketPriceCap,
         availability: inStock ? ["InStock"] : [],
         mode: searchMode,
         brand: resultBrand.trim() || undefined,
@@ -708,9 +714,11 @@ export default function Home() {
                     {searching ? "Searching…" : "Search Channel3"} <ArrowRight size={15} />
                   </button>
                 </form>
+                {room.discovery?.length > 0 && resultCurrency && resultCurrency !== searchCurrency && <p className="market-currency-note" role="status">Showing previous {resultCurrency} results. Search again to load prices for {searchCurrency}.</p>}
+                {roomBudgetCents != null && roomBudgetCurrency !== searchCurrency && <p className="market-currency-note" role="note">Shared budget: {roomBudgetCurrency} {(roomBudgetCents / 100).toFixed(2)} · Selected market: {searchCurrency}. No conversion is assumed. Set a {searchCurrency} maximum in Filters to apply a market price cap.</p>}
                 <details className="filter-details"><summary>Filters <span>Price · category · color · brand · retailer</span></summary><div className="search-filters">
-                  <label>Min price <input aria-label="Minimum price" type="number" min="0" value={minPrice} onChange={e => setMinPrice(e.target.value)} /></label>
-                  <label>Max price <input aria-label="Maximum price" type="number" min="0" value={maxPrice} onChange={e => setMaxPrice(e.target.value)} /></label>
+                  <label>Min price ({searchCurrency}) <input aria-label={`Minimum price in ${searchCurrency}`} type="number" min="0" value={minPrice} onChange={e => setMinPrice(e.target.value)} /></label>
+                  <label>Max price ({searchCurrency}) <input aria-label={`Maximum price in ${searchCurrency}`} type="number" min="0" value={maxPrice} onChange={e => setMaxPrice(e.target.value)} placeholder={roomBudgetCents != null && roomBudgetCurrency === searchCurrency ? (roomBudgetCents / 100).toFixed(2) : "No cap"} /></label>
                   <label><input type="checkbox" checked={inStock} onChange={e => setInStock(e.target.checked)} /> In stock</label>
                   <label>Search mode <select value={searchMode} onChange={e => setSearchMode(e.target.value)}><option value="default">Standard</option><option value="agentic">Agentic</option><option value="keyword">Keyword</option></select></label>
                   <label>Search market <select value={searchLocale} onChange={e=>setSearchLocale(e.target.value)}><option value="US:USD:en">United States · USD</option><option value="GB:GBP:en">United Kingdom · GBP</option><option value="CA:CAD:en">Canada · CAD</option><option value="AU:AUD:en">Australia · AUD</option></select></label>
@@ -720,7 +728,14 @@ export default function Home() {
                   <label>Condition <select value={resultCondition} onChange={e=>setResultCondition(e.target.value)}><option value="">New or unknown</option><option value="new">New</option><option value="used">Used</option></select></label>
                   <label>Image color <input type="color" value={resultColor||"#000000"} onChange={e=>setResultColor(e.target.value)} /><input type="checkbox" checked={!!resultColor} onChange={e=>setResultColor(e.target.checked?"#000000":"")} /> Use color</label>
                 </div>
-                <p>Filters apply to your next Channel3 search. Enter the brand’s exact name and the retailer’s domain.</p>
+                <p role="note">{roomBudgetCents == null
+                  ? `Price filters use ${searchCurrency}.`
+                  : roomBudgetCurrency === searchCurrency
+                    ? `Your shared budget is ${roomBudgetCurrency} ${(roomBudgetCents / 100).toFixed(2)} and is used as the maximum unless you enter another ${searchCurrency} cap.`
+                    : `Your shared budget is ${roomBudgetCurrency} ${(roomBudgetCents / 100).toFixed(2)}, while this market uses ${searchCurrency}. No exchange rate is assumed. Enter a ${searchCurrency} maximum to filter by budget.`}
+                  {maxPrice.trim() && roomBudgetCents != null && roomBudgetCurrency !== searchCurrency
+                    ? ` Results are capped at ${searchCurrency} ${Number(maxPrice).toFixed(2)}; the shared room budget remains ${roomBudgetCurrency} ${(roomBudgetCents / 100).toFixed(2)}.`
+                    : ""} Filters apply to your next Channel3 search. Enter the brand’s exact name and the retailer’s domain.</p>
                 </details>
                 <details className="filter-details"><summary>Search from a picture or product link</summary><div className="search-filters"><label>Public HTTPS URL <input type="url" value={visualUrl} onChange={e=>setVisualUrl(e.target.value)} placeholder="https://example.com/image-or-product" /></label><button disabled={!online||searching||!visualUrl.trim()} onClick={()=>discoverVisual("image")}>Find from image</button><button disabled={!online||searching||!visualUrl.trim()} onClick={()=>discoverVisual("product")}>Look up product link</button></div></details>
                 {room.search_page_token && room.search_query === query && <button onClick={() => discover(room.search_page_token)}>Next results</button>}
