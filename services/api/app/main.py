@@ -1274,12 +1274,13 @@ def payer(r,request):
     actor=auth(r,request); s=load(r)
     if actor!=s['payer']: raise HTTPException(403,'Only the designated payer can checkout')
     return s
+@app.get('/api/rooms/{r}/orders/{order_id}/receipt')
 @app.get('/api/rooms/{r}/merchant-orders/{order_id}/receipt')
 def merchant_order_receipt(r:str,order_id:str,request:Request):
     with lock:
         auth(r,request);room_state=load(r)
         p=payment_load(order_id,r)
-        if not p.get('merchant_id') or p['status']!='paid':raise HTTPException(404,'Completed merchant order not found')
+        if p['status']!='paid' or not p.get('capture'):raise HTTPException(404,'Completed sandbox order not found')
         trail=[];rescue=None
         labels={'offer_published':'Merchant offer published','accepted':'Buyer accepted the offer',
                 'auto_accepted_within_buyer_limit':'Offer accepted within buyer limit',
@@ -1298,17 +1299,19 @@ def merchant_order_receipt(r:str,order_id:str,request:Request):
         if p.get('authorized_at'):
             trail.append({'event':'paypal_authorized','label':'Buyer approved PayPal authorization','actor':p['payer'],
                 'at':datetime.fromisoformat(p['authorized_at']).timestamp()})
-        if p.get('paid_at') and not any(item['event']=='payment_captured' for item in trail):
+        paid_at=p.get('paid_at') or p.get('verified_at')
+        if paid_at and not any(item['event']=='payment_captured' for item in trail):
             trail.append({'event':'payment_captured','label':'PayPal Sandbox capture verified','actor':'paypal',
-                'at':datetime.fromisoformat(p['paid_at']).timestamp()})
+                'at':datetime.fromisoformat(paid_at).timestamp()})
         trail.sort(key=lambda item:item['at'])
-        return {'order_id':p['id'],'checkout_mode':CheckoutMode.SHOP_SIDE_MERCHANT,'merchant_id':p['merchant_id'],'merchant_name':p.get('merchant_name'),
+        reference_total=p.get('reference_total',p['total'])
+        return {'order_id':p['id'],'checkout_mode':CheckoutMode.SHOP_SIDE_MERCHANT,'merchant_id':p.get('merchant_id'),'merchant_name':p.get('merchant_name') or 'ShopSide sandbox catalog',
             'items':[{'product_id':line['product'],'name':line['name'],'quantity':line['quantity'],
-                      'reference_price_cents':line['price']} for line in p['items']],
-            'reference_total_cents':p['reference_total'],'total_cents':p['total'],
-            'savings_cents':p['reference_total']-p['total'],'currency':p['currency'],
+                      'variant':line.get('variant'),'reference_price_cents':line['price']} for line in p['items']],
+            'reference_total_cents':reference_total,'total_cents':p['total'],
+            'savings_cents':reference_total-p['total'],'currency':p['currency'],
             'paypal_sandbox_order_id':p['provider_id'],'paypal_sandbox_authorization_id':p.get('authorization_id'),
-            'paypal_sandbox_capture_id':p['capture'],'paid_at':p['paid_at'],
+            'paypal_sandbox_capture_id':p['capture'],'paid_at':paid_at,
             'deal_rescue_id':rescue.get('id') if rescue else p.get('opportunity_id'),
             'buyer_maximum_cents':p.get('authorized_amount_cents',p['total']),
             'authorized_at':p.get('authorized_at'),'buyer_policy_version':p.get('policy_version'),
@@ -1630,7 +1633,7 @@ async def payment(r:str,id:str,action:str,request:Request,background_tasks:Backg
             if result['status']=='COMPLETED' and captures:
                 capture=captures[0]
                 if capture['status']!='COMPLETED' or not same_amount(capture.get('amount'),p['total']) or unit.get('payee',{}).get('merchant_id')!=os.environ['PAYPAL_MERCHANT_ID']: raise HTTPException(409,'Provider verification mismatch')
-                p['status']='paid'; p['capture']=capture['id']; p['verified_at']=datetime.now(timezone.utc).isoformat(); p['verification']='paypal_order_readback'
+                p['status']='paid'; p['capture']=capture['id']; p['verified_at']=datetime.now(timezone.utc).isoformat(); p.setdefault('paid_at',p['verified_at']); p['verification']='paypal_order_readback'
                 if not p.get('merchant_id'):payment_save(p)
         with lock:
             s=load(r); s['checkout']={'id':id,'status':p['status'],'total':p['total'],'currency':'USD'}

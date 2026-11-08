@@ -1,7 +1,7 @@
 import {test,expect} from '@playwright/test';
 
 test('completed sandbox order has a dedicated authenticated summary',async({page})=>{
-  await page.route('**/api/rooms/room-1/merchant-orders/order-1/receipt',route=>route.fulfill({
+  await page.route('**/api/rooms/room-1/orders/order-1/receipt',route=>route.fulfill({
     status:200,contentType:'application/json',body:JSON.stringify({order_id:'order-1',merchant_name:'Urban Workspace',
       items:[{product_id:'desk',name:'Desk',quantity:1,reference_price_cents:27000}],reference_total_cents:27000,
       total_cents:26100,savings_cents:900,currency:'USD',paypal_sandbox_order_id:'PAYPAL-SANDBOX-ORDER',

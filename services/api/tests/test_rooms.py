@@ -56,6 +56,26 @@ def test_verified_capture_and_pending_recovery(monkeypatch):
     assert len([c for c in calls if c[1].endswith('/capture')])==1
     assert a.get(base).json()['checkout']['status']=='paid'
 
+def test_direct_sandbox_order_receipt_uses_verified_capture_and_variant(monkeypatch):
+    import app.main as main
+    import pytest
+    from starlette.requests import Request
+    payment={'id':'local-order','room':'room','payer':'A','status':'paid','capture':'capture-1','provider_id':'paypal-order',
+             'verified_at':'2026-11-08T12:00:00+00:00','total':7800,'currency':'USD',
+             'items':[{'product':'11','name':'Lamp','variant':'midnight','quantity':2,'price':3900}]}
+    monkeypatch.setattr(main,'auth',lambda *_:'A')
+    monkeypatch.setattr(main,'load',lambda _:{'people':['A','B']})
+    monkeypatch.setattr(main,'payment_load',lambda *_:payment)
+    monkeypatch.setattr(main.db,'execute',lambda *_:type('Rows',(),{'fetchall':lambda self:[]})())
+    request=Request({'type':'http','method':'GET','path':'/','headers':[], 'query_string':b'', 'server':('test',80), 'client':('test',1), 'scheme':'http'})
+    receipt=main.merchant_order_receipt('room','local-order',request)
+    assert receipt['merchant_name']=='ShopSide sandbox catalog'
+    assert receipt['total_cents']==receipt['reference_total_cents']==7800 and receipt['savings_cents']==0
+    assert receipt['items'][0]['variant']=='midnight' and receipt['paypal_sandbox_capture_id']=='capture-1'
+    assert receipt['paid_at']==payment['verified_at']
+    payment['status']='approval'
+    with pytest.raises(main.HTTPException):main.merchant_order_receipt('room','local-order',request)
+
 def test_discovery_shared_and_external_offer_cannot_charge(monkeypatch):
     import app.main as main
     from app.discovery import normalize

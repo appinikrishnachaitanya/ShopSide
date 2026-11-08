@@ -68,6 +68,7 @@ def test_accepted_offer_paypal_capture_and_merchant_order(monkeypatch):
     assert result.json()['capture']=='SANDBOX-CAPTURE'
     assert client.post(base+'/capture').json()['status']=='paid'
     receipt=client.get(f'/api/rooms/{room_id}/merchant-orders/{payment["id"]}/receipt').json()
+    assert client.get(f'/api/rooms/{room_id}/orders/{payment["id"]}/receipt').json()==receipt
     assert receipt['order_id']==payment['id'] and receipt['total_cents']==27000
     assert receipt['paypal_sandbox_capture_id']=='SANDBOX-CAPTURE'
     assert len(receipt['items'])==2

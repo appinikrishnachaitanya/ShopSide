@@ -88,6 +88,7 @@ export default function Home() {
   const [catalogQuery, setCatalogQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [orderRef, setOrderRef] = useState("");
+  const [paypalLoading, setPaypalLoading] = useState(false);
   const [paymentBusy, setPaymentBusy] = useState(false);
   const [paypalReady, setPaypalReady] = useState(false);
   const [preauthorization, setPreauthorization] = useState(false);
@@ -253,7 +254,9 @@ export default function Home() {
   async function checkout() {
     try {
       const existing = await api("rooms/" + room.id + "/checkout");
-      V(existing || (await api("rooms/" + room.id + "/quote", {})));
+      const payment=existing || (await api("rooms/" + room.id + "/quote", {}));
+      V(payment);
+      if(payment?.status==="approval" && payment.provider_id){setOrderRef(payment.provider_id);setPreauthorization(payment.authorization_mode==="PREAUTHORIZED");}
     } catch (e: any) {
       E(e.message);
     }
@@ -261,7 +264,6 @@ export default function Home() {
   async function pay(action: string, authorizeMode = preauthorization || !!quote?.provisional || quote?.authorization_mode === "PREAUTHORIZED" || room?.checkout?.authorization_mode === "PREAUTHORIZED") {
     if (paymentBusy) return;
     setPaymentBusy(true);
-    let waitingForSdk = false;
     try {
       const result = await api(
         "rooms/" + room.id + "/payments/" + quote.id + "/" + (authorizeMode ? "preauthorize/" : "") + action,
@@ -270,40 +272,46 @@ export default function Home() {
       if (action === "create") {
         if (!result.order_id) throw Error("The sandbox order was not created. Check payment status before retrying.");
         setOrderRef(result.order_id);
-        const cfg = await api("paypal/config");
-        if (!cfg.client_id) throw Error("Configure PayPal sandbox credentials");
-        const script = document.createElement("script");
-        script.src =
-          "https://www.paypal.com/sdk/js?client-id=" +
-          encodeURIComponent(cfg.client_id) +
-          "&currency=USD&intent=" + (authorizeMode ? "authorize" : "capture");
-        waitingForSdk = true;
-        script.onerror = () => { setPaymentBusy(false); E("Could not load PayPal. Check payment status before retrying."); };
-        script.onload = () => {
-          try {
-            const paypal = (window as any).paypal;
-            if (!paypal?.Buttons) throw Error("PayPal approval is unavailable. Check payment status before retrying.");
-            Promise.resolve(paypal.Buttons({
-              createOrder: () => result.order_id,
-              onApprove: () => pay(authorizeMode ? "authorize" : "capture", authorizeMode),
-              onCancel: () =>
-                E("Approval cancelled. Check status before retrying."),
-              onError: () => E("PayPal approval failed; check payment status."),
-            }).render("#paypal-buttons")).then(() => setPaypalReady(true)).catch(() => E("PayPal approval could not be displayed. Check payment status before retrying.")).finally(() => setPaymentBusy(false));
-          } catch (err: any) { setPaymentBusy(false); E(err.message); }
-        };
-        document.body.appendChild(script);
       } else {
         if ((action === "cancel" && result.status === "cancelled") || (action === "void" && result.status === "voided")) { V(null); setOrderRef(""); setPaypalReady(false); setPreauthorization(false); }
         setNotice("Sandbox payment status: " + result.status); E("");
       }
     } catch (e: any) {
-      waitingForSdk = false;
       E(e.message);
     } finally {
-      if (!waitingForSdk) setPaymentBusy(false);
+      setPaymentBusy(false);
     }
   }
+
+  const payRef=useRef(pay);
+  payRef.current=pay;
+  useEffect(()=>{
+    if(!cartOpen||!orderRef||!quote?.id||["paid","authorized","capture_pending","voided"].includes(room?.checkout?.status))return;
+    let active=true;let script:HTMLScriptElement|undefined;let buttons:any;let scriptLoaded=false;
+    const authorizeMode=preauthorization||!!quote.provisional||quote.authorization_mode==="PREAUTHORIZED"||room?.checkout?.authorization_mode==="PREAUTHORIZED";
+    setPaypalReady(false);setPaypalLoading(true);
+    api("paypal/config").then(cfg=>{
+      if(!active)return;
+      if(!cfg.client_id)throw Error("Configure PayPal sandbox credentials");
+      const sdkKey=cfg.client_id+":"+(authorizeMode?"authorize":"capture");
+      const renderButtons=()=>{
+        if(!active)return;
+        try{
+          const paypal=(window as any).paypal;
+          if(!paypal?.Buttons)throw Error("PayPal approval is unavailable. Check payment status before retrying.");
+          buttons=paypal.Buttons({createOrder:()=>orderRef,onApprove:()=>payRef.current(authorizeMode?"authorize":"capture",authorizeMode),onCancel:()=>E("Approval cancelled. Check status before retrying."),onError:()=>E("PayPal approval failed; check payment status.")});
+          Promise.resolve(buttons.render("#paypal-buttons")).then(()=>{if(active)setPaypalReady(true)}).catch(()=>{if(active)E("PayPal approval could not be displayed. Check payment status before retrying.")}).finally(()=>{if(active)setPaypalLoading(false)});
+        }catch(err:any){if(active){setPaypalLoading(false);E(err.message)}}
+      };
+      if((window as any).__shopsidePaypalSdk===sdkKey && (window as any).paypal?.Buttons){renderButtons();return;}
+      script=document.createElement("script");
+      script.src="https://www.paypal.com/sdk/js?client-id="+encodeURIComponent(cfg.client_id)+"&currency=USD&intent="+(authorizeMode?"authorize":"capture");
+      script.onerror=()=>{if(active){setPaypalLoading(false);E("Could not load PayPal. Check payment status before retrying.")}};
+      script.onload=()=>{scriptLoaded=true;(window as any).__shopsidePaypalSdk=sdkKey;renderButtons()};
+      document.body.appendChild(script);
+    }).catch((err:any)=>{if(active){setPaypalLoading(false);E(err.message)}});
+    return()=>{active=false;setPaypalReady(false);setPaypalLoading(false);if(buttons?.close)Promise.resolve(buttons.close()).catch(()=>{});if(!scriptLoaded)script?.remove()};
+  },[cartOpen,orderRef,quote?.id,preauthorization,quote?.provisional,quote?.authorization_mode,room?.checkout?.status,room?.checkout?.authorization_mode]);
 
   async function enter() {
     try {
@@ -1319,7 +1327,8 @@ export default function Home() {
                       {catalog.find((p) => p.id === proposal.product)?.name}
                     </button>
                   ))}
-                  {(!!room.cart?.length || !!room.checkout) && !quote && <div className="cart-checkout-cta"><div><strong>${(sandboxSubtotal/100).toFixed(2)} USD</strong><small>Sandbox subtotal · no real charge</small></div><button
+                  {!quote && room.checkout?.status==="paid" && <div className="cart-checkout-cta"><div><strong>Sandbox payment completed</strong><small>PayPal capture verified · no goods shipped</small></div><a className="receipt-link" href={`/orders/${encodeURIComponent(room.checkout.order_id||room.checkout.id)}?room=${encodeURIComponent(room.id)}`}>View order summary / print receipt →</a></div>}
+                  {(!!room.cart?.length || !!room.checkout) && !quote && room.checkout?.status!=="paid" && <div className="cart-checkout-cta"><div><strong>${(sandboxSubtotal/100).toFixed(2)} USD</strong><small>Sandbox subtotal · no real charge</small></div><button
                     className="checkout-button"
                     disabled={
                       !online ||
@@ -1351,12 +1360,12 @@ export default function Home() {
                       </strong>
                       {quote.provisional&&room.checkout?.status!=="paid"&&<p>The listed items total ${((quote.reference_total||0)/100).toFixed(2)}. No merchant deal or savings exists yet. A final eligible offer must stay within this hold and your policy.</p>}
                       {!quote.provisional&&quote.reference_total!=null&&<p>Original ${(quote.reference_total/100).toFixed(2)} · Savings ${((quote.reference_total-quote.total)/100).toFixed(2)}</p>}
-                      {room.checkout?.status==="paid"&&quote.merchant_id&&<div className="order-receipt"><span>ORDER COMPLETED · PAYPAL SANDBOX</span><h4>Chosen together. Paid in sandbox.</h4><p>{quote.merchant_name} · {quote.items?.map((item:any)=>`${item.name} × ${item.quantity}`).join(" + ")}</p><strong>ShopSide order {room.checkout.order_id||quote.id}</strong><small>PayPal capture {room.checkout.paypal_capture_id||quote.capture} · ${((room.checkout.total??quote.total??0)/100).toFixed(2)} USD · No goods shipped</small><a href={`/orders/${encodeURIComponent(room.checkout.order_id||quote.id)}?room=${encodeURIComponent(room.id)}`}>View order summary →</a></div>}
+                      {room.checkout?.status==="paid"&&<div className="order-receipt"><span>ORDER COMPLETED · PAYPAL SANDBOX</span><h4>Chosen together. Paid in sandbox.</h4><p>{quote.merchant_name||"ShopSide sandbox catalog"} · {quote.items?.map((item:any)=>`${item.name} × ${item.quantity}`).join(" + ")}</p><strong>ShopSide order {room.checkout.order_id||quote.id}</strong><small>PayPal capture {room.checkout.paypal_capture_id||quote.capture} · ${((room.checkout.total??quote.total??0)/100).toFixed(2)} USD · No goods shipped</small><a href={`/orders/${encodeURIComponent(room.checkout.order_id||quote.id)}?room=${encodeURIComponent(room.id)}`}>View order summary / print receipt →</a></div>}
                       {orderRef && <p className="order-reference">Sandbox order: <strong>{orderRef}</strong> · {room.checkout?.status === "paid" ? "payment verified" : room.checkout?.status === "authorized" ? "authorized hold; settlement pending" : "awaiting PayPal approval"}</p>}
                       {room.checkout?.status!=="paid" && <p className="quote-approval-note">{preauthorization||quote.provisional ? "PayPal will place a temporary authorization hold for this exact sandbox merchant and amount. The accepted offer can settle within 24 hours while you are away." : "You’ll review and approve the payment in PayPal before anything is captured."}</p>}
                       {quote.preauthorization_available && !quote.provisional && (room.checkout?.status || quote.status)==="quoted" && !paypalReady && <label className="quote-approval-note"><input type="checkbox" checked={preauthorization} onChange={event=>setPreauthorization(event.target.checked)} /> Authorize now, settle later if this merchant’s offer still qualifies</label>}
-                      {!["paid","authorized","capture_pending","buyer_approval_required","voided"].includes(room.checkout?.status||quote.status) && <button className="quote-primary" disabled={paymentBusy || paypalReady} onClick={() => pay("create")}>
-                        {paymentBusy ? "Preparing PayPal…" : paypalReady ? "Approve with PayPal below" : preauthorization||quote.provisional ? "Create PayPal authorization" : "Create PayPal sandbox order"}
+                      {!["paid","authorized","capture_pending","buyer_approval_required","voided"].includes(room.checkout?.status||quote.status) && <button className="quote-primary" disabled={paymentBusy || paypalLoading || paypalReady} onClick={() => pay("create")}>
+                        {paymentBusy || paypalLoading ? "Preparing PayPal…" : paypalReady ? "Approve with PayPal below" : orderRef ? "Resume PayPal approval" : preauthorization||quote.provisional ? "Create PayPal authorization" : "Create PayPal sandbox order"}
                       </button>}
                       <div id="paypal-buttons" />
                       {room.checkout?.status!=="paid" && <button disabled={paymentBusy} onClick={() => pay("status")}>

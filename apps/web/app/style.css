@@ -1942,6 +1942,14 @@ body{background:radial-gradient(ellipse at 15% 0%,#201b42 0,transparent 36%),#0d
 .board-grid-empty{height:100%;display:grid;place-items:center;margin:0;border:1px dashed var(--line,#343c31);border-radius:14px;color:var(--muted,#9aa59b);text-align:center;padding:24px}
 .bundle-market-note{margin:9px 0;padding:9px 12px;border:1px solid #625479;border-radius:10px;background:#211d2d;color:#d9cdef;font-size:11px;line-height:1.5}
 .price-watch-target{display:flex;gap:7px;align-items:center}.price-watch-target select{min-width:76px}.price-watch-target input{min-width:0;width:130px}
+/* Shared action sizing across shopping overlays and product tools. */
+:is(.smart-bundle,.plan-overview,.provider-details,.cart-details,.concierge-panel) button:not(.merchant-close){min-height:44px;display:inline-flex;align-items:center;justify-content:center;gap:8px;border-radius:10px;padding:10px 14px;line-height:1.25;font-size:12px;font-weight:700}
+:is(.smart-bundle,.plan-overview,.provider-details,.cart-details,.concierge-panel) button:focus-visible{outline:3px solid #c3f8e2;outline-offset:2px}
+:is(.smart-bundle,.plan-overview,.provider-details,.cart-details,.concierge-panel) button:disabled{opacity:.5;cursor:not-allowed}
+.commerce-tools{align-items:end}.commerce-tools>label{display:grid;align-content:end;gap:7px;min-width:0}.commerce-tools>button{align-self:end}
+.plan-next-actions,.bundle-item>div:last-child,.bundle-approval>div:last-of-type{align-items:center;gap:8px}
+.bundle-item>div:last-child{flex-wrap:wrap;justify-content:flex-end}
+@media(max-width:640px){.bundle-item>div:last-child{width:100%;justify-content:flex-start}.commerce-tools>label{flex:1 1 150px}.commerce-tools>button{flex:1 1 150px}}
 
 .member-identity{display:inline-flex;align-items:center;margin-top:10px;padding:6px 10px;border:1px solid #51466b;border-radius:999px;color:#e8dcff;background:#29233c;font-size:11px;font-weight:700}
 /* A compact workspace keeps discovery, decisions and conversation within reach. */
@@ -2060,3 +2068,21 @@ button>svg{flex:none}
 .filter-details summary .filter-summary-copy{color:#f2edf9;font-weight:500}
 .filter-details .search-filters.filter-market-grid,.filter-details .search-filters.filter-product-grid{padding:0}
 .filter-details .visual-search-filters{padding:12px 14px 14px}
+
+/* Shared workspace actions: consistent sizing and a restrained primary/secondary palette. */
+:is(.discovery,.smart-bundle,.plan-overview,.provider-details,.cart-details,.concierge-panel,.seller-offers) :is(button):not(.cart-backdrop){min-height:44px;border-radius:10px;align-items:center;justify-content:center;gap:8px;line-height:1.25}
+:is(.discovery,.smart-bundle,.plan-overview,.provider-details,.cart-details,.concierge-panel,.seller-offers) button:focus-visible{outline:3px solid #c3f8e2;outline-offset:2px}
+:is(.discovery,.smart-bundle,.plan-overview,.provider-details,.cart-details,.concierge-panel,.seller-offers) button:disabled{opacity:.5;cursor:not-allowed}
+.discovery .live-actions{display:flex;align-items:stretch;gap:8px;flex-wrap:wrap}
+.discovery .live-actions button{min-height:44px;padding:10px 14px;border:1px solid #65577a;border-radius:10px;background:#332a42;color:#f3edf9;font-size:12px;font-weight:700}
+.discovery .live-actions button:first-child{background:#bba7ff;border-color:#bba7ff;color:#201638}
+.filter-details .visual-search-filters{display:grid;grid-template-columns:minmax(0,1fr) repeat(2,minmax(145px,auto));align-items:end;gap:10px}
+.visual-search-filters .filter-control{height:100%;margin:0}
+.visual-search-filters>button{display:inline-flex;min-height:44px;margin:0;padding:10px 14px;border:1px solid #65577a;border-radius:10px;background:#332a42;color:#f3edf9;font-size:12px;font-weight:700}
+.visual-search-filters>button:hover:not(:disabled){background:#493a5b;border-color:#a38ac4}
+.visual-filter-details summary .filter-summary-chevron{margin-left:auto}
+.commerce-tools{align-items:end}.commerce-tools>label{display:grid;align-content:end;gap:7px;min-width:0}.commerce-tools>button{align-self:end}
+.bundle-item>div:last-child{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:8px}
+.merchant-card-head{align-items:center;gap:12px}.merchant-card-head button{min-height:44px;border-radius:10px;padding:10px 14px}
+@media(max-width:760px){.filter-details .visual-search-filters{grid-template-columns:repeat(2,minmax(0,1fr))}.visual-search-filters .filter-control{grid-column:1/-1}.visual-search-filters>button{width:100%}}
+@media(max-width:480px){.filter-details .visual-search-filters{grid-template-columns:1fr}.visual-search-filters .filter-control{grid-column:auto}.bundle-item>div:last-child{width:100%;justify-content:flex-start}.commerce-tools>label,.commerce-tools>button{flex:1 1 150px}}
