@@ -416,7 +416,11 @@ export default function Home() {
     }
   }
 
-  const all = [...catalog, ...(room?.discovery || [])];
+  const all = Array.from(new Map([
+    ...catalog,
+    ...Object.values(room?.shortlisted_products || {}) as any[],
+    ...(room?.discovery || []),
+  ].map((product:any) => [product.id, product])).values());
   const p = all.find((p) => p.id === (pendingFocus || room?.focus));
   const sandboxSubtotal = (room?.cart || []).reduce((total: number, item: any) => total + (catalog.find(product => product.id === item.product)?.price || 0) * item.quantity, 0);
   const cartItemCount = (room?.cart || []).reduce((total: number, item: any) => total + item.quantity, 0) + (room?.external_cart?.length || 0);

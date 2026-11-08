@@ -73,6 +73,57 @@ def test_discovery_shared_and_external_offer_cannot_charge(monkeypatch):
     assert a.post(base+'/commands',json={'command_id':'spotlight','revision':rev,'kind':'focus','value':item['id']}).status_code==200
     assert b.get(base).json()['focus']==item['id']
 
+def test_saved_channel3_products_survive_a_new_market_discovery(monkeypatch):
+    import app.main as main
+    saved=[
+        {'id':'channel3:chair-one','provider_id':'chair-one','name':'Chair One','provenance':'channel3','offers':[]},
+        {'id':'channel3:chair-two','provider_id':'chair-two','name':'Chair Two','provenance':'channel3','offers':[]},
+    ]
+    newer={'id':'channel3:uk-chair','provider_id':'uk-chair','name':'UK Chair','provenance':'channel3','offers':[]}
+    monkeypatch.setattr(main,'search_products',lambda query,max_price=None: saved if query=='chairs' else [newer])
+    client=TestClient(app)
+    created=client.post('/api/rooms',json={'name':'A'}).json();base='/api/rooms/'+created['room']['id']
+    assert client.post(base+'/discovery',json={'query':'chairs'}).status_code==200
+    for product in saved:
+        state=client.get(base).json()
+        assert client.post(base+'/commands',json={'kind':'shortlist','value':product['id'],'revision':state['revision'],'command_id':'save-'+product['id']}).status_code==200
+    # Emulate a room created before product snapshots were persisted.
+    with main.lock:
+        legacy=main.load(created['room']['id']);legacy.pop('shortlisted_products',None);main.save(created['room']['id'],legacy)
+    assert client.post(base+'/discovery',json={'query':'UK chairs'}).status_code==200
+    state=client.get(base).json()
+    assert state['shortlist']==[product['id'] for product in saved]
+    assert [state['shortlisted_products'][product['id']]['name'] for product in saved]==['Chair One','Chair Two']
+    compare=','.join(state['shortlist'])
+    assert client.post(base+'/commands',json={'kind':'compare','value':compare,'revision':state['revision'],'command_id':'compare-old-market'}).status_code==200
+    state=client.get(base).json()
+    assert state['comparison']==[product['id'] for product in saved]
+    assert client.post(base+'/commands',json={'kind':'shortlist','value':saved[0]['id'],'revision':state['revision'],'command_id':'remove-old-market'}).status_code==200
+    state=client.get(base).json()
+    assert state['shortlist']==[saved[1]['id']]
+    assert saved[0]['id'] not in state['shortlisted_products']
+
+def test_legacy_shortlist_is_snapshotted_before_discovery_is_replaced():
+    import app.main as main
+    product={'id':'channel3:legacy-chair','name':'Saved chair'}
+    state={'shortlist':[product['id']],'discovery':[product]}
+    main.preserve_shortlisted_products(state)
+    assert state['shortlisted_products']=={product['id']:product}
+
+def test_legacy_shortlist_recovers_channel3_products_after_the_old_search_is_gone(monkeypatch):
+    import app.main as main
+    old={'id':'channel3:chair-one','provider_id':'chair-one','name':'Saved chair','provenance':'channel3','offers':[]}
+    room={'id':'room','people':['A'],'payer':'A','revision':0,'shortlist':[old['id']],
+          'discovery':[{'id':'channel3:uk-chair','name':'Current UK result'}],'commands':[]}
+    monkeypatch.setattr(main,'auth',lambda *_:'A')
+    monkeypatch.setattr(main,'load',lambda _r:room)
+    monkeypatch.setattr(main,'product_details',lambda provider_id:old if provider_id=='chair-one' else None)
+    monkeypatch.setattr(main,'save',lambda _r,state:room.update(state))
+    from starlette.requests import Request
+    request=Request({'type':'http','method':'POST','path':'/','headers':[], 'query_string':b'', 'server':('test',80), 'client':('test',1), 'scheme':'http'})
+    result=main.restore_shortlist('room',request)
+    assert result['shortlisted_products'][old['id']]['name']=='Saved chair'
+
 def test_missing_discovery_key_is_explicit(monkeypatch):
     monkeypatch.delenv('CHANNEL3_API_KEY',raising=False)
     a=TestClient(app); result=a.post('/api/rooms',json={'name':'A'}).json()

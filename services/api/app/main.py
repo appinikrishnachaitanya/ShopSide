@@ -82,6 +82,19 @@ def load(r):
     row=db.execute('SELECT state FROM rooms WHERE id=?',(r,)).fetchone()
     if not row: raise HTTPException(404,'Room not found')
     return json.loads(row[0])
+def room_products(state):
+    """Known products include persistent shortlist snapshots after discovery changes."""
+    products={product['id']:product for product in catalog}
+    products.update(state.get('shortlisted_products') or {})
+    products.update({product['id']:product for product in state.get('discovery',[])})
+    return list(products.values())
+def preserve_shortlisted_products(state):
+    """Backfill snapshots before replacing discovery, including rooms from older releases."""
+    shortlist=set(state.get('shortlist') or [])
+    if not shortlist:return
+    saved=state.setdefault('shortlisted_products',{})
+    for product in state.get('discovery',[]):
+        if product.get('id') in shortlist:saved.setdefault(product['id'],product)
 def public_room_state(state):
     result={key:value for key,value in state.items() if key!='commands' and (key!='intent_activity' or os.getenv('SHOPSIDE_BUNDLE_TRACE','').lower()=='true')}
     if result.get('smart_bundle') and os.getenv('SHOPSIDE_BUNDLE_TRACE','').lower()!='true':
@@ -561,25 +574,31 @@ def command(r:str,body:Command,request:Request):
         actor=auth(r,request); s=load(r)
         if body.command_id in s['commands']: return {'ok':True}
         if body.revision!=s['revision']: raise HTTPException(409,'Room changed; refresh and retry')
-        if body.kind in ['focus','shortlist','reaction'] and body.value not in [p['id'] for p in catalog]+[p['id'] for p in s.get('discovery',[])]: raise HTTPException(422,'Unknown product')
+        known_ids=[p['id'] for p in room_products(s)]
+        if body.kind in ['focus','shortlist','reaction'] and body.value not in known_ids and not (body.kind=='shortlist' and body.value in s.get('shortlist',[])): raise HTTPException(422,'Unknown product')
         if body.kind=='focus': s['focus']=body.value; s['spotlight_by']=actor
         elif body.kind=='shortlist':
-            if body.value in s['shortlist']: s['shortlist'].remove(body.value)
-            else: s['shortlist'].append(body.value)
+            if body.value in s['shortlist']:
+                s['shortlist'].remove(body.value)
+                s.get('shortlisted_products',{}).pop(body.value,None)
+            else:
+                product=next(p for p in room_products(s) if p['id']==body.value)
+                s['shortlist'].append(body.value)
+                s.setdefault('shortlisted_products',{})[body.value]=product
         elif body.kind=='reaction':
             people=s['reactions'].setdefault(body.value,[])
             if actor in people: people.remove(actor)
             else: people.append(actor)
         elif body.kind=='compare':
             ids=body.value.split(',')
-            if not 2<=len(ids)<=3 or len(set(ids))!=len(ids) or any(i not in [p['id'] for p in catalog]+[p['id'] for p in s.get('discovery',[])] for i in ids): raise HTTPException(422,'Select two different products')
+            if not 2<=len(ids)<=3 or len(set(ids))!=len(ids) or any(i not in [p['id'] for p in room_products(s)] for i in ids): raise HTTPException(422,'Select two different products')
             s['comparison']=ids
         elif body.kind=='placement_upsert':
             try: placement=RoomPlacement.model_validate_json(body.value)
             except ValueError:raise HTTPException(422,'Invalid placement')
             placements=s.setdefault('room_placements',[])
             old=next((p for p in placements if p['product_id']==placement.product_id),None)
-            product=next((p for p in catalog+s.get('discovery',[]) if p['id']==placement.product_id),None)
+            product=next((p for p in room_products(s) if p['id']==placement.product_id),None)
             if not product and not old:raise HTTPException(422,'Select a product in this room')
             from .experience_router import spatial_eligible
             if product and not spatial_eligible(product):raise HTTPException(422,'Only spatial products can be placed in Move-in Studio')
@@ -600,7 +619,7 @@ def command(r:str,body:Command,request:Request):
             if not body.value.strip() or len(body.value)>100: raise HTTPException(422,'Room title must be 1–100 characters')
             s['title']=body.value.strip()
         elif body.kind=='agreement':
-            if body.value not in [p['id'] for p in catalog]+[p['id'] for p in s.get('discovery',[])]: raise HTTPException(422,'Unknown product')
+            if body.value not in [p['id'] for p in room_products(s)]: raise HTTPException(422,'Unknown product')
             votes=s.setdefault('agreement_votes',{})
             votes[actor]=body.value
             s['agreed_product']=body.value if len(s['people'])>=2 and all(votes.get(person)==body.value for person in s['people']) else None
@@ -724,7 +743,7 @@ async def agent(r:str,body:Ask,request:Request):
             found=search_products(query,max_price)
             if time.monotonic()>deadline: return []
             with lock:
-                s=load(r); s['discovery']=found; s['revision']+=1; save(r,s)
+                s=load(r); preserve_shortlisted_products(s); s['discovery']=found; s['revision']+=1; save(r,s)
             return found
         def get_merchant_offer(product_id:str)->dict:
             """Return an eligible demo merchant offer; external discovery is retailer-only."""
@@ -1833,7 +1852,7 @@ def discover(r:str,body:Search,request:Request):
     auth(r,request)
     found=search_products(body.query,body.max_price)
     with lock:
-        s=load(r); s['discovery']=found; s['search_query']=body.query; s['revision']+=1; save(r,s)
+        s=load(r); preserve_shortlisted_products(s); s['discovery']=found; s['search_query']=body.query; s['revision']+=1; save(r,s)
     return {'products':found}
 @app.post('/api/rooms/{r}/search')
 def refined_search(r:str,body:AdvancedSearch,request:Request):
@@ -1850,6 +1869,7 @@ def refined_search(r:str,body:AdvancedSearch,request:Request):
     with lock:
         state=load(r)
         if state['revision']!=body.revision: raise HTTPException(409,'Room changed while searching; retry')
+        preserve_shortlisted_products(state)
         state['discovery']=result['products']
         state['search_query']=body.query
         state['search_page_token']=result['next_page_token']
@@ -1890,13 +1910,35 @@ def visual_discovery(r:str,body:VisualDiscovery,request:Request):
     with lock:
         state=load(r)
         if state['revision']!=body.revision:raise HTTPException(409,'Room changed while searching; retry')
-        state['discovery']=products;state['search_query']='Image search' if body.kind=='image' else 'Product URL lookup'
+        preserve_shortlisted_products(state);state['discovery']=products;state['search_query']='Image search' if body.kind=='image' else 'Product URL lookup'
         state['search_page_token']=None;state['commands'].append(body.command_id);state['revision']+=1;save(r,state)
     return {'products':products,'source':'Channel3','retrieved_at':time.time()}
 
 @app.get('/api/rooms/{r}/discovery/{product_id}')
 def detail(r:str,product_id:str,request:Request):
     auth(r,request); return product_details(product_id)
+
+@app.post('/api/rooms/{r}/shortlist/restore')
+def restore_shortlist(r:str,request:Request):
+    auth(r,request)
+    with lock:
+        state=load(r)
+        saved=state.get('shortlisted_products') or {}
+        current={product['id'] for product in state.get('discovery',[])}
+        missing=[item for item in state.get('shortlist',[]) if item not in saved and item not in current and item.startswith('channel3:')][:3]
+    restored=[]
+    for item in missing:
+        try:
+            product=product_details(item.removeprefix('channel3:'))
+            if product.get('id')==item:restored.append(product)
+        except HTTPException:
+            continue
+    with lock:
+        state=load(r);saved=state.setdefault('shortlisted_products',{})
+        for product in restored:
+            if product['id'] in state.get('shortlist',[]):saved.setdefault(product['id'],product)
+        if restored:state['revision']+=1;save(r,state)
+        return public_room_state(state)
 
 def room_channel3_product(r,product_id,request):
     with lock:
@@ -2023,7 +2065,9 @@ async def concierge_turn(r:str,body:ConciergeTurn,request:Request):
             current=load(r)
             if current.get('shopping_journey',{})!=prior: raise HTTPException(409,'The shopping conversation changed; retry')
             current['shopping_journey']=journey
-            if results or not question: current['discovery']=results
+            if results or not question:
+                preserve_shortlisted_products(current)
+                current['discovery']=results
             current['commands'].append(body.command_id);current['revision']+=1;save(r,current)
         return {'ok':True}
     finally:
