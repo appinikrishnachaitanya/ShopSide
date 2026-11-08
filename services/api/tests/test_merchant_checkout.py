@@ -122,6 +122,35 @@ def test_accepted_offer_cannot_start_checkout_after_consent_revoked_or_expired()
         assert 'consent' in response.json()['detail'].lower()
         assert client.get(f'/api/rooms/{room_id}').json()['checkout'] is None
 
+def test_revoked_consent_blocks_payment_creation_but_allows_cancelling_quote():
+    client,room_id,offer,_=accepted_offer()
+    base=f'/api/rooms/{room_id}'
+    payment=client.post(f'{base}/seller-offers/{offer["id"]}/checkout').json()
+    assert client.post(f'{base}/seller-offers/consent',json={'enabled':False,'command_id':'revoke-after-quote'}).status_code==200
+    assert client.post(f'{base}/payments/{payment["id"]}/create').status_code==409
+    assert client.post(f'{base}/payments/{payment["id"]}/cancel').json()['status']=='cancelled'
+
+def test_revoked_consent_blocks_capture_but_allows_paypal_status_readback(monkeypatch):
+    client,room_id,offer,_=accepted_offer()
+    base=f'/api/rooms/{room_id}'
+    payment=client.post(f'{base}/seller-offers/{offer["id"]}/checkout').json()
+    calls=[]
+    async def provider(method,path,payload=None,operation=None):
+        calls.append((method,path))
+        if method=='POST' and path=='/v2/checkout/orders':return {'id':'PAYPAL-ORDER'}
+        if method=='GET':return {'status':'APPROVED','purchase_units':[{}]}
+        raise AssertionError('Capture must not be sent after revocation')
+    monkeypatch.setattr(main,'paypal',provider)
+    assert client.post(f'{base}/payments/{payment["id"]}/create').status_code==200
+    assert client.post(f'{base}/seller-offers/consent',json={'enabled':False,'command_id':'revoke-before-capture'}).status_code==200
+    assert client.post(f'{base}/payments/{payment["id"]}/capture').status_code==409
+    assert client.post(f'{base}/payments/{payment["id"]}/status').status_code==200
+    assert all(not path.endswith('/capture') for _,path in calls)
+    with main.lock:
+        pending=main.payment_load(payment['id'],room_id)
+        main.release_merchant_reservations(pending)
+        main.payment_save(pending)
+
 
 def test_cancel_unused_merchant_quote_releases_stock():
     client,room_id,offer,_=accepted_offer()

@@ -91,6 +91,24 @@ def test_seller_consent_policy_records_changes_without_payment_authority():
     assert revoked['seller_policy_history'][-1]['enabled'] is False
     assert revoked['seller_offers']['enabled'] is False
 
+def test_deal_rescue_progress_is_room_scoped_and_hides_merchant_policy(monkeypatch):
+    setup(monkeypatch)
+    buyer,friend,rid=room();base='/api/rooms/'+rid
+    assert TestClient(main.app).get(base+'/deal-rescue').status_code==403
+    assert buyer.post(base+'/seller-offers/consent',json={'enabled':True,'command_id':'progress-consent'}).status_code==200
+    assert buyer.post(base+'/seller-offers/request').status_code==200
+    result=friend.get(base+'/deal-rescue').json()
+    assert result['payment_mode']=='NEGOTIATE_FIRST'
+    assert len(result['opportunities'])==3
+    assert all(item['label']=='Awaiting merchant' for item in result['opportunities'])
+    assert all(set(item)=={'id','merchant_name','status','label','created_at','expires_at'} for item in result['opportunities'])
+    first=result['opportunities'][0]
+    row=main.db.execute('SELECT state FROM merchant_opportunities WHERE id=?',(first['id'],)).fetchone()
+    opportunity=json.loads(row[0]);opportunity['status']='ACCEPTED';opportunity['offer']={'expires_at':int(time.time())-1}
+    main.merchant_service.save_op(main.db,opportunity)
+    updated=friend.get(base+'/deal-rescue').json()
+    assert next(item for item in updated['opportunities'] if item['id']==first['id'])['label']=='Expired'
+
 def test_expired_quote_and_merchant_optout(monkeypatch):
     ids=setup(monkeypatch);buyer,_,rid=room();base='/api/rooms/'+rid
     m=merchant(main.db,ids[0][0]);m['opt_in']=False;put(main.db,'merchants',ids[0][0],m)

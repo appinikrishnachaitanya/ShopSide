@@ -976,6 +976,13 @@ async def payment(r:str,id:str,action:str,request:Request,background_tasks:Backg
         if action=='create' and time.time()>p['expires']: raise HTTPException(409,'Quote expired; cancel and request a new quote')
         if action=='capture' and p['status']!='pending' and time.time()>p['expires']:
             raise HTTPException(409,'Quote expired; payment cannot be captured')
+        if p.get('merchant_id') and (action=='create' or (action=='capture' and p['status']!='pending')):
+            offer=next ( (item for item in s.get('flash_offers',[]) if item.get('id')==p.get('quote_id')), None )
+            if not offer or offer.get('status')!='ACCEPTED':raise HTTPException(409,'Merchant offer is no longer accepted')
+            opportunity=merchant_service.scoped_opportunity(db,p['merchant_id'],offer['opportunity_id'])
+            consent=s.get('seller_offers') or {}
+            if not consent.get('enabled') or consent.get('demand_key')!=opportunity.get('demand_key') or consent.get('expires_at',0)<=merchant_service.now():
+                raise HTTPException(409,'Seller-offer consent has expired or been revoked')
         payment_busy.add(id)
     try:
         amount=f"{p['total']//100}.{p['total']%100:02d}"
@@ -1513,6 +1520,35 @@ class SellerConsent(BaseModel):
     enabled:bool
     command_id:str=Field(min_length=8,max_length=100)
     auto_accept_limit_cents:int|None=Field(default=None,ge=0,le=100000000)
+
+@app.get('/api/rooms/{r}/deal-rescue')
+def deal_rescue_progress(r:str,request:Request):
+    """Show room members the current seller progress without private merchant policy."""
+    labels={'CREATED':'Negotiating','MATCHING':'Negotiating','MERCHANT_NOTIFIED':'Awaiting merchant',
+            'OFFER_PROPOSED':'Negotiating','HUMAN_REVIEW':'Awaiting seller review',
+            'OFFER_PUBLISHED':'Offer available','COUNTERED':'Awaiting merchant',
+            'ACCEPTED':'Awaiting buyer payment approval','ORDER_COMPLETED':'Captured',
+            'DECLINED':'Rejected','EXPIRED':'Expired','CANCELLED':'Cancelled'}
+    with lock:
+        auth(r,request)
+        state=load(r);consent=state.get('seller_offers') or {}
+        demand_key=consent.get('demand_key')
+        if not consent.get('enabled') or not demand_key:
+            return {'enabled':False,'payment_mode':'NEGOTIATE_FIRST','opportunities':[]}
+        rows=db.execute('SELECT state FROM merchant_opportunities WHERE room_id=? AND demand_key=?',(r,demand_key)).fetchall()
+        opportunities=[]
+        for row in rows:
+            op=merchant_service.read(row)
+            if not op:continue
+            status=op.get('status','CREATED')
+            if op.get('demand',{}).get('expires_at',0)<=merchant_service.now() and status not in merchant_service.TERMINAL:status='EXPIRED'
+            if status=='ACCEPTED' and (op.get('offer') or {}).get('expires_at',0)<=merchant_service.now():status='EXPIRED'
+            seller=merchant_service.merchant(db,op['merchant_id'])
+            opportunities.append({'id':op['id'],'merchant_name':seller['name'],'status':status,
+                'label':labels.get(status,'Negotiating'),'created_at':op.get('created_at'),
+                'expires_at':op.get('demand',{}).get('expires_at')})
+        return {'enabled':True,'payment_mode':'NEGOTIATE_FIRST','expires_at':consent.get('expires_at'),
+                'opportunities':sorted(opportunities,key=lambda op:(op['created_at'] or 0,op['id']))}
 
 @app.post('/api/rooms/{r}/seller-offers/consent')
 def seller_consent(r:str,body:SellerConsent,request:Request):
