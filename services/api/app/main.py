@@ -2187,7 +2187,7 @@ def merchant_me(request:Request):
         m=merchant_service.merchant(db,merchant_id)
         ops=[merchant_service.read(row) for row in db.execute('SELECT state FROM merchant_opportunities WHERE merchant_id=?',(merchant_id,)).fetchall()]
         orders=[json.loads(row[0]) for row in db.execute('SELECT state FROM merchant_orders WHERE merchant_id=?',(merchant_id,)).fetchall()]
-        orders=[{'id':p['id'],'quote_id':p['quote_id'],'items':p['items'],'total':p['total'],'currency':p['currency'],
+        orders=[{'id':p['id'],'quote_id':p.get('quote_id'),'items':p['items'],'total':p['total'],'currency':p['currency'],
                  'status':p['status'],'paypal_order_id':p.get('provider_id'),'paypal_capture_id':p.get('capture'),
                  'paypal_authorization_id':p.get('authorization_id'),'paid_at':p.get('paid_at')}
                 for p in orders if p.get('merchant_id')==merchant_id]
@@ -2205,7 +2205,7 @@ def merchant_me(request:Request):
                 'active_negotiations':sum(o['status'] in ('OFFER_PROPOSED','HUMAN_REVIEW','OFFER_PUBLISHED','COUNTERED') for o in ops),
                 'accepted_deals':sum(o['status'] in ('ACCEPTED','ORDER_COMPLETED') for o in ops),
                 'confirmed_orders':sum(o['status']=='paid' for o in orders),
-                'authorized_holds':sum(o['status']=='authorized' and o.get('paypal_authorization_id') for o in orders),
+                'authorized_holds':sum(1 for o in orders if o['status']=='authorized' and o.get('paypal_authorization_id')),
                 'settlement_fallbacks':sum(o['status']=='buyer_approval_required' for o in orders),
                 'sandbox_revenue_cents':sum(o['total'] for o in orders if o['status']=='paid')}}
 
