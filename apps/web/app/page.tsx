@@ -117,6 +117,10 @@ export default function Home() {
   const [searchLocale, setSearchLocale] = useState("US:USD:en");
   const [resultBrand, setResultBrand] = useState("");
   const [resultRetailer, setResultRetailer] = useState("");
+  const [resultCategory, setResultCategory] = useState("");
+  const [resultCondition, setResultCondition] = useState("");
+  const [resultColor, setResultColor] = useState("");
+  const [visualUrl, setVisualUrl] = useState("");
   const [copied, CopyDone] = useState(false);
   const [cartOpen, setCartOpen] = useState(false),
     [notice, setNotice] = useState("");
@@ -463,6 +467,9 @@ export default function Home() {
         mode: searchMode,
         brand: resultBrand.trim() || undefined,
         retailer_domain: resultRetailer.trim() || undefined,
+        category: resultCategory.trim() || undefined,
+        condition: resultCondition || undefined,
+        color_hex: resultColor || undefined,
         country: searchLocale.split(":")[0],
         currency: searchLocale.split(":")[1],
         language: searchLocale.split(":")[2],
@@ -476,6 +483,13 @@ export default function Home() {
     } catch (e: any) {
       E(e.message);
     } finally { setSearching(false); }
+  }
+  async function discoverVisual(kind:"image"|"product"){
+    setSearching(true);
+    try{
+      await api(`rooms/${room.id}/discovery/visual`,{url:visualUrl.trim(),kind,revision:room.revision,command_id:crypto.randomUUID()});
+      S(await api(`rooms/${room.id}`));E("");
+    }catch(e:any){E(e.message)}finally{setSearching(false)}
   }
   async function findForMission() {
     const mission=room.move_in?.mission;
@@ -694,7 +708,7 @@ export default function Home() {
                     {searching ? "Searching…" : "Search Channel3"} <ArrowRight size={15} />
                   </button>
                 </form>
-                <details className="filter-details"><summary>Filters <span>Price · availability · brand · retailer</span></summary><div className="search-filters">
+                <details className="filter-details"><summary>Filters <span>Price · category · color · brand · retailer</span></summary><div className="search-filters">
                   <label>Min price <input aria-label="Minimum price" type="number" min="0" value={minPrice} onChange={e => setMinPrice(e.target.value)} /></label>
                   <label>Max price <input aria-label="Maximum price" type="number" min="0" value={maxPrice} onChange={e => setMaxPrice(e.target.value)} /></label>
                   <label><input type="checkbox" checked={inStock} onChange={e => setInStock(e.target.checked)} /> In stock</label>
@@ -702,9 +716,13 @@ export default function Home() {
                   <label>Search market <select value={searchLocale} onChange={e=>setSearchLocale(e.target.value)}><option value="US:USD:en">United States · USD</option><option value="GB:GBP:en">United Kingdom · GBP</option><option value="CA:CAD:en">Canada · CAD</option><option value="AU:AUD:en">Australia · AUD</option></select></label>
                   <label>Brand <input value={resultBrand} onChange={e=>setResultBrand(e.target.value)} placeholder="e.g. Nike" maxLength={100}/></label>
                   <label>Retailer domain <input value={resultRetailer} onChange={e=>setResultRetailer(e.target.value)} placeholder="e.g. nike.com" maxLength={253}/></label>
+                  <label>Category <input value={resultCategory} onChange={e=>setResultCategory(e.target.value)} placeholder="Exact Channel3 category" maxLength={100}/></label>
+                  <label>Condition <select value={resultCondition} onChange={e=>setResultCondition(e.target.value)}><option value="">New or unknown</option><option value="new">New</option><option value="used">Used</option></select></label>
+                  <label>Image color <input type="color" value={resultColor||"#000000"} onChange={e=>setResultColor(e.target.value)} /><input type="checkbox" checked={!!resultColor} onChange={e=>setResultColor(e.target.checked?"#000000":"")} /> Use color</label>
                 </div>
                 <p>Filters apply to your next Channel3 search. Enter the brand’s exact name and the retailer’s domain.</p>
                 </details>
+                <details className="filter-details"><summary>Search from a picture or product link</summary><div className="search-filters"><label>Public HTTPS URL <input type="url" value={visualUrl} onChange={e=>setVisualUrl(e.target.value)} placeholder="https://example.com/image-or-product" /></label><button disabled={!online||searching||!visualUrl.trim()} onClick={()=>discoverVisual("image")}>Find from image</button><button disabled={!online||searching||!visualUrl.trim()} onClick={()=>discoverVisual("product")}>Look up product link</button></div></details>
                 {room.search_page_token && room.search_query === query && <button onClick={() => discover(room.search_page_token)}>Next results</button>}
                 {room.mode === "move_in" && <button className="search-from-brief" disabled={!online || searching} onClick={findForMission}><Sparkles size={15}/> Find matches from your plan</button>}
                 {room.discovery?.length > 0 ? (
@@ -1040,7 +1058,7 @@ export default function Home() {
               <div className="workspace-panel" hidden={workspaceView!=="plan"} aria-label="Shopping plan">
                 <PlanOverview room={room} me={me} online={online} products={all} showRoomOption={showRoomOption} api={api} onState={fresh=>S((current:any)=>!current || fresh.revision>=current.revision?fresh:current)} onDiscover={()=>setWorkspaceView("discover")} onRoom={()=>{setStudioActive(false);setWorkspaceView("room")}} toggleShortlist={id=>command("shortlist",id)} onCompare={async()=>{try{if(room.comparison?.join(",")!==room.shortlist.join(","))await api("rooms/"+room.id+"/commands",{kind:"compare",value:room.shortlist.join(","),revision:room.revision,command_id:crypto.randomUUID()});setWorkspaceView("together");E("")}catch(e:any){E(e.message)}}} />
                 {(room.price_watch_alerts||[]).filter((alert:any)=>alert.participant===me).slice(-3).map((alert:any)=><div key={alert.id} className="plan-deals-highlight" role="status"><strong>Price Watch · ${((alert.price_cents||0)/100).toFixed(2)} USD</strong><p>{alert.message}</p><small>Observed {new Date(alert.observed_at).toLocaleString()} · Open the product to check its latest retailer offer.</small></div>)}
-                <div id="plan-deals" tabIndex={-1} className={"plan-deals"+(highlightPlanDeals?" plan-deals-highlight":"")}><SellerOffers room={room} me={me} onCheckout={async offer=>{try{const payment=await api(`rooms/${room.id}/seller-offers/${offer.id}/checkout`,{});V(payment);openCart();E("")}catch(e:any){E(e.message)}}} /></div>
+                <div id="plan-deals" tabIndex={-1} className={"plan-deals"+(highlightPlanDeals?" plan-deals-highlight":"")}><SellerOffers room={room} me={me} onCheckout={async offer=>{try{const payment=await api(`rooms/${room.id}/seller-offers/${offer.id}/checkout`,{});V(payment);openCart();E("")}catch(e:any){E(e.message)}}} onPreauthorize={async opportunity=>{try{const maximum=room.seller_offers.auto_accept_limit_cents;const payment=await api(`rooms/${room.id}/deal-rescue/${opportunity.id}/provisional-authorization`,{maximum_cents:maximum});V(payment);setPreauthorization(true);openCart();E("")}catch(e:any){E(e.message)}}} /></div>
                 {room.mode === "move_in" ? <details className="plan-more"><summary>Move-in planning details</summary><MoveIn room={room} online={online} me={me} api={api} initialLoading={initialMissionLoading} onResults={()=>setWorkspaceView("discover")} /><MemoryReceipt room={room} online={online} /></details> : <details className="plan-more"><summary>Ask ShopSide about your plan</summary><Concierge room={room} online={online} /><button type="button" disabled={!online} onClick={async()=>{try{await api("rooms/"+room.id+"/home-plan",{});E("");}catch(e:any){E(e.message);}}}>Add move-in planning</button></details>}
               </div>
               <div className="workspace-panel" hidden={workspaceView!=="room"} aria-label="Room view">

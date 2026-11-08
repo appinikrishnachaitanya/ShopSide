@@ -2,8 +2,8 @@
 import {useEffect,useState} from "react";
 import {sessionFetch} from "./lib/session";
 
-type Opportunity={id:string;merchant_name:string;label:string};
-export default function DealProgress({room}:{room:any}){
+type Opportunity={id:string;merchant_id:string;merchant_name:string;label:string;status:string;preauthorization_available:boolean};
+export default function DealProgress({room,onPreauthorize}:{room:any;onPreauthorize?:(opportunity:Opportunity)=>Promise<void>}){
  const [opportunities,setOpportunities]=useState<Opportunity[]>([]);
  const [error,setError]=useState(false);
  useEffect(()=>{
@@ -20,5 +20,5 @@ export default function DealProgress({room}:{room:any}){
  },[room?.id,room?.revision,room?.seller_offers?.enabled]);
  if(error)return <p role="status">Seller progress is temporarily unavailable. Your offers remain in the room.</p>;
  if(!opportunities.length)return null;
- return <section className="deal-progress" aria-label="Deal Rescue progress"><strong>Deal Rescue · seller progress</strong><p>Negotiation can continue while you’re away. A PayPal payment still needs your approval.</p><ul>{opportunities.map(item=><li key={item.id}><span>{item.merchant_name}</span><strong>{item.label}</strong></li>)}</ul></section>;
+ return <section className="deal-progress" aria-label="Deal Rescue progress"><strong>Deal Rescue · seller progress</strong><p>Negotiation can continue while you’re away. Preauthorization needs your explicit PayPal approval first.</p><ul>{opportunities.map(item=><li key={item.id}><span>{item.merchant_name}</span><strong>{item.label}</strong>{onPreauthorize&&item.preauthorization_available&&room.seller_offers?.merchant_id===item.merchant_id&&room.seller_offers?.auto_accept_limit_cents>0&&!room.checkout&&!['EXPIRED','DECLINED','CANCELLED','ORDER_COMPLETED'].includes(item.status)&&<button type="button" onClick={()=>onPreauthorize(item)}>Authorize up to ${(room.seller_offers.auto_accept_limit_cents/100).toFixed(2)} in PayPal</button>}</li>)}</ul></section>;
 }

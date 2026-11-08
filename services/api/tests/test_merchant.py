@@ -94,6 +94,22 @@ def test_seller_consent_policy_records_changes_without_payment_authority():
     assert revoked['seller_policy_history'][-1]['enabled'] is False
     assert revoked['seller_offers']['enabled'] is False
 
+
+def test_buyer_agent_counters_only_within_recorded_limit(monkeypatch):
+    ids=setup(monkeypatch);buyer,_,rid=room();base='/api/rooms/'+rid
+    buyer.post(base+'/seller-offers/consent',json={'enabled':True,'auto_accept_limit_cents':13000,'command_id':'buyer-agent-limit'})
+    buyer.post(base+'/seller-offers/request')
+    seller=TestClient(main.app);headers={'Authorization':'Bearer '+ids[0][1]}
+    op=seller.get('/api/merchant/me',headers=headers).json()['opportunities'][0]
+    result=seller.post(f"/api/merchant/opportunities/{op['id']}/action",headers=headers,json={
+        'action':'generate','price_cents':14000,'command_id':'buyer-agent-quote'})
+    assert result.status_code==200,result.text
+    quote=result.json()['quote']
+    assert quote['status']=='COUNTERED' and quote['buyer_agent_countered']
+    updated=seller.get('/api/merchant/me',headers=headers).json()['opportunities'][0]
+    assert updated['counter_price_cents']==13000 and updated['counter_count']==1
+    assert main.merchant_service.read(main.db.execute('SELECT state FROM merchant_jobs WHERE id=?',(quote['counter_job_id'],)).fetchone())['status']=='pending'
+
 def test_seller_negotiation_window_is_bounded_and_not_payment_approval():
     buyer,_,rid=room();base='/api/rooms/'+rid
     assert buyer.post(base+'/seller-offers/consent',json={'enabled':True,'duration_seconds':172801,'command_id':'window-invalid'}).status_code==422
@@ -133,7 +149,7 @@ def test_deal_rescue_progress_is_room_scoped_and_hides_merchant_policy(monkeypat
     assert result['payment_mode']=='NEGOTIATE_FIRST'
     assert len(result['opportunities'])==3
     assert all(item['label']=='Awaiting merchant' for item in result['opportunities'])
-    assert all(set(item)=={'id','merchant_name','status','label','created_at','expires_at'} for item in result['opportunities'])
+    assert all(set(item)=={'id','merchant_id','merchant_name','status','label','created_at','expires_at','preauthorization_available'} for item in result['opportunities'])
     first=result['opportunities'][0]
     row=main.db.execute('SELECT state FROM merchant_opportunities WHERE id=?',(first['id'],)).fetchone()
     opportunity=json.loads(row[0]);opportunity['status']='ACCEPTED';opportunity['offer']={'expires_at':int(time.time())-1}

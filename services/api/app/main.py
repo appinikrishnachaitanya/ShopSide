@@ -1,4 +1,4 @@
-import json, os, secrets, threading, asyncio, time, re
+import json, os, secrets, threading, asyncio, time, re, hashlib
 from datetime import datetime, timezone
 from fastapi import WebSocket, WebSocketDisconnect
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
@@ -807,6 +807,7 @@ db.execute('CREATE TABLE IF NOT EXISTS merchant_orders(id TEXT PRIMARY KEY, merc
 db.execute('CREATE TABLE IF NOT EXISTS paypal_webhook_events(id TEXT PRIMARY KEY, event_type TEXT NOT NULL, received_at TEXT NOT NULL)')
 db.execute('CREATE TABLE IF NOT EXISTS channel3_webhook_events(id TEXT PRIMARY KEY, event_type TEXT NOT NULL, received_at TEXT NOT NULL, state TEXT NOT NULL)')
 db.execute('CREATE TABLE IF NOT EXISTS channel3_watches(id TEXT PRIMARY KEY, room TEXT NOT NULL, participant TEXT NOT NULL, product_id TEXT NOT NULL, subscription_id TEXT NOT NULL, scope TEXT NOT NULL, threshold_cents INTEGER NOT NULL, status TEXT NOT NULL, state TEXT NOT NULL)')
+db.execute('CREATE TABLE IF NOT EXISTS settlement_jobs(id TEXT PRIMARY KEY, payment_id TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL)')
 db.commit()
 
 class WatchRequest(BaseModel):
@@ -889,9 +890,100 @@ def payment_load(id,r):
     if not row: raise HTTPException(404,'Payment not found')
     return json.loads(row[0])
 
+def claim_payment_settlement(payment):
+    """Cross-instance compare-and-swap before any PayPal capture attempt."""
+    row=db.execute('SELECT state FROM payments WHERE id=? AND room=?',(payment['id'],payment['room'])).fetchone()
+    if not row:raise HTTPException(404,'Payment not found')
+    current=json.loads(row[0])
+    if current['status']=='capture_pending' and current.get('settlement_claimed_at',0)>time.time()-60:
+        raise HTTPException(409,'Settlement is already being reconciled')
+    if current['status'] not in ('authorized','capture_pending'):
+        raise HTTPException(409,'Payment is not authorized for settlement')
+    current.update(payment)
+    current['status']='capture_pending';current['settlement_claimed_at']=time.time()
+    changed=db.execute('UPDATE payments SET state=? WHERE id=? AND room=? AND state=?',
+        (json.dumps(current),payment['id'],payment['room'],row[0]))
+    if changed.rowcount!=1:raise HTTPException(409,'Settlement was claimed by another worker')
+    if current.get('merchant_id'):
+        db.execute('UPDATE merchant_orders SET state=? WHERE id=? AND merchant_id=?',
+            (json.dumps(current),current['id'],current['merchant_id']))
+    db.commit()
+    return current
+
+def schedule_authorized_settlements(r,offer):
+    if not offer or offer.get('status')!='ACCEPTED':return
+    rows=db.execute('SELECT state FROM payments WHERE room=?',(r,)).fetchall()
+    for row in rows:
+        payment=json.loads(row[0])
+        if payment.get('status')!='authorized' or payment.get('authorization_mode')!='PREAUTHORIZED':continue
+        if payment.get('merchant_id')!=offer.get('merchant_id'):continue
+        if payment.get('opportunity_id')!=offer.get('opportunity_id') and payment.get('quote_id')!=offer.get('id'):continue
+        job_id='paypal-settle-'+payment['id']+'-'+offer['id']
+        db.execute('INSERT INTO settlement_jobs VALUES(?,?,?,?) ON CONFLICT(id) DO NOTHING',
+            (job_id,payment['id'],'pending',datetime.now(timezone.utc).isoformat()))
+        db.commit()
+        if merchant_tasks.configured():
+            merchant_tasks.enqueue(job_id,path=f"/api/internal/paypal-settlements/{payment['id']}/process")
+
+class ProvisionalAuthorization(BaseModel):
+    maximum_cents:int=Field(gt=0,le=100000000)
+
+@app.post('/api/rooms/{r}/deal-rescue/{op_id}/provisional-authorization')
+def provisional_authorization(r:str,op_id:str,body:ProvisionalAuthorization,request:Request):
+    """Freeze a single owned merchant and its SKUs before negotiation finishes."""
+    from .payment_authorization import merchant_payee
+    with lock:
+        room=payer(r,request);consent=room.get('seller_offers') or {}
+        if not consent.get('enabled') or not consent.get('merchant_id'):
+            raise HTTPException(409,'Choose one participating merchant for preauthorization')
+        if consent.get('expires_at',0)<=time.time():raise HTTPException(409,'Buyer consent expired')
+        if consent.get('auto_accept_limit_cents')!=body.maximum_cents:
+            raise HTTPException(409,'Save the same maximum as your buyer acceptance limit first')
+        if room.get('checkout'):raise HTTPException(409,'An active checkout already exists')
+        op=merchant_service.scoped_opportunity(db,consent['merchant_id'],op_id)
+        if op['room_id']!=r or op['demand_key']!=consent['demand_key']:
+            raise HTTPException(409,'Merchant opportunity is outside this buyer policy')
+        if op['status'] in ('DECLINED','EXPIRED','CANCELLED','ORDER_COMPLETED'):
+            raise HTTPException(409,'Merchant opportunity has closed')
+        if body.maximum_cents>op['demand']['budget_cents']:
+            raise HTTPException(422,'Maximum exceeds the shared budget')
+        merchant=merchant_service.merchant(db,op['merchant_id'])
+        if not merchant.get('sandbox') or not merchant.get('opt_in') or not merchant.get('active'):
+            raise HTTPException(409,'Merchant is unavailable')
+        merchant_payee(op['merchant_id'])
+        products={p['product_id']:p for p in merchant_service.product_rows(db,op['merchant_id']) if p.get('source')=='SHOPSIDE_SANDBOX'}
+        items=[]
+        for product_id in op['product_ids']:
+            product=products.get(product_id)
+            if not product or not product.get('active') or product.get('currency')!='USD' or product.get('stock_quantity',0)<1:
+                raise HTTPException(409,'Exact merchant item is unavailable')
+            items.append({'product':product_id,'sku':product['sku'],'variant':'standard','quantity':1,'price':product['price_cents'],'name':product['title']})
+        reference=sum(item['price'] for item in items)
+        if reference!=op['reference_total_cents'] or body.maximum_cents>reference:
+            raise HTTPException(409,'Merchant listing or maximum changed')
+        payment=dict(id=secrets.token_urlsafe(20),room=r,payer=room['payer'],merchant_id=op['merchant_id'],merchant_name=merchant['name'],
+            opportunity_id=op_id,quote_id=None,provisional=True,checkout_mode=CheckoutMode.SHOP_SIDE_MERCHANT,
+            items=items,total=body.maximum_cents,reference_total=reference,currency='USD',
+            authorized_amount_cents=body.maximum_cents,
+            policy_version=consent.get('policy_version'),demand_key=consent['demand_key'],
+            expires=min(time.time()+600,consent['expires_at']),status='quoted',
+            create_id=secrets.token_hex(16),capture_id=secrets.token_hex(16),preauthorization_available=True)
+        try:
+            db.begin()
+            for item in items:
+                cursor=db.execute('UPDATE merchant_inventory SET reserved_quantity=reserved_quantity+1 WHERE merchant_id=? AND product_id=? AND stock_quantity-reserved_quantity>=1',
+                    (op['merchant_id'],item['product']))
+                if cursor.rowcount!=1:raise HTTPException(409,'Merchant inventory unavailable')
+            payment_save(payment,commit=False)
+            db.execute('INSERT INTO merchant_orders(id,merchant_id,state) VALUES(?,?,?)',(payment['id'],op['merchant_id'],json.dumps(payment)))
+            room['checkout']={'id':payment['id'],'status':'quoted','total':payment['total'],'currency':'USD','merchant_id':op['merchant_id']}
+            room['revision']+=1;save(r,room,commit=False);db.commit();notify(r)
+        except Exception:db.rollback();raise
+        return payment
+
 @app.post('/api/rooms/{r}/payments/{id}/preauthorize/{action}')
 async def preauthorize_payment(r:str,id:str,action:str,request:Request):
-    from .payment_authorization import merchant_payee
+    from .payment_authorization import merchant_payee, same_amount
     if action not in ('create','authorize','status','void'):raise HTTPException(404)
     with lock:
         s=payer(r,request);p=payment_load(id,r)
@@ -905,10 +997,16 @@ async def preauthorize_payment(r:str,id:str,action:str,request:Request):
             consent=s.get('seller_offers') or {}
             if not consent.get('enabled') or consent.get('expires_at',0)<=time.time():raise HTTPException(409,'Buyer consent expired')
             if p['status']=='quoted':
-                p.update(authorization_mode='PREAUTHORIZED',payee=payee,authorization_expires=min(time.time()+86400,consent['expires_at']),authorize_id=secrets.token_hex(16),authorization_capture_id=secrets.token_hex(16),authorization_void_id=secrets.token_hex(16),status='creating')
+                p.update(authorization_mode='PREAUTHORIZED',payee=payee,authorized_amount_cents=p['total'],authorization_expires=min(time.time()+86400,consent['expires_at']),authorize_id=secrets.token_hex(16),authorization_capture_id=secrets.token_hex(16),authorization_void_id=secrets.token_hex(16),status='creating')
                 payment_save(p)
         elif p.get('authorization_mode')!='PREAUTHORIZED':raise HTTPException(409,'Authorization was not selected')
         if p['status']=='paid':return {'status':'paid','order_id':p.get('provider_id'),'authorization_id':p.get('authorization_id'),'capture_id':p.get('capture')}
+        if p['status']=='capture_pending' and action=='status':
+            return {'status':'capture_pending','order_id':p.get('provider_id'),'authorization_id':p.get('authorization_id')}
+        if action=='authorize':
+            consent=s.get('seller_offers') or {}
+            if not consent.get('enabled') or consent.get('expires_at',0)<=time.time() or (p.get('demand_key') and consent.get('demand_key')!=p['demand_key']) or (p.get('policy_version') and consent.get('policy_version')!=p['policy_version']):
+                raise HTTPException(409,'Buyer policy changed; authorization cannot continue')
         payment_busy.add(id)
     amount=f"{p['total']//100}.{p['total']%100:02d}"
     try:
@@ -924,6 +1022,8 @@ async def preauthorize_payment(r:str,id:str,action:str,request:Request):
         elif action=='void':
             if p['status']!='authorized':raise HTTPException(409,'Only an authorized payment can be voided')
             await paypal('POST',f"/v2/payments/authorizations/{p['authorization_id']}/void",{},p['authorization_void_id'])
+            authorization=await paypal('GET',f"/v2/payments/authorizations/{p['authorization_id']}")
+            if authorization.get('status')!='VOIDED':raise HTTPException(503,'PayPal void requires reconciliation')
             with lock:
                 db.begin()
                 try:
@@ -936,15 +1036,16 @@ async def preauthorize_payment(r:str,id:str,action:str,request:Request):
             order=await paypal('GET',f"/v2/checkout/orders/{p['provider_id']}")
             unit=order['purchase_units'][0]
             authorizations=unit.get('payments',{}).get('authorizations',[])
-            if unit.get('payee',{}).get('merchant_id')!=payee or unit.get('amount')!={'currency_code':'USD','value':amount}:
+            if unit.get('payee',{}).get('merchant_id')!=payee or not same_amount(unit.get('amount'),p['total']):
                 raise HTTPException(409,'PayPal merchant or amount mismatch')
             if authorizations:
                 authorization=authorizations[0]
-                if authorization.get('status')!='CREATED' or authorization.get('amount')!={'currency_code':'USD','value':amount}:
+                if authorization.get('status')!='CREATED' or not same_amount(authorization.get('amount'),p['total']):
                     raise HTTPException(409,'PayPal authorization mismatch')
-                p['authorization_id']=authorization['id'];p['status']='authorized';payment_save(p)
-                if p['status']=='authorized' and merchant_tasks.configured():
-                    merchant_tasks.enqueue('paypal-settle-'+id,path=f'/api/internal/paypal-settlements/{id}/process')
+                p['authorization_id']=authorization['id'];p['status']='authorized'
+                p.setdefault('authorized_at',datetime.now(timezone.utc).isoformat());payment_save(p)
+                ready=next((o for o in s.get('flash_offers',[]) if o.get('status')=='ACCEPTED' and (o.get('id')==p.get('quote_id') or o.get('opportunity_id')==p.get('opportunity_id'))),None)
+                if ready:schedule_authorized_settlements(r,ready)
         with lock:
             s=load(r);s['checkout']={**s['checkout'],'status':p['status'],'authorization_mode':'PREAUTHORIZED'}
             s['revision']+=1;save(r,s)
@@ -955,39 +1056,67 @@ async def preauthorize_payment(r:str,id:str,action:str,request:Request):
 
 @app.post('/api/internal/paypal-settlements/{id}/process')
 async def settle_authorized_payment(id:str,request:Request):
-    from .payment_authorization import require_authorized_scope
+    from .payment_authorization import require_authorized_scope, partial_capture_enabled, same_amount
     if not merchant_tasks.verify(request):raise HTTPException(403,'Cloud Tasks identity required')
     with lock:
         row=db.execute('SELECT room FROM payments WHERE id=?',(id,)).fetchone()
         if not row:raise HTTPException(404,'Payment not found')
         r=row[0];p=payment_load(id,r);s=load(r)
         if p['status']=='paid':return {'status':'paid','capture_id':p.get('capture')}
+        fallback=False
         if p['status']=='capture_pending':
             if not p.get('authorization_id'):raise HTTPException(409,'Authorization missing')
         else:
-            offer=next((o for o in s.get('flash_offers',[]) if o.get('id')==p.get('quote_id')),None)
+            offer=next((o for o in s.get('flash_offers',[]) if (p.get('quote_id') and o.get('id')==p['quote_id']) or (p.get('opportunity_id') and o.get('opportunity_id')==p['opportunity_id'] and o.get('status')=='ACCEPTED')),None)
             if not offer:raise HTTPException(409,'Merchant offer unavailable')
             payee=require_authorized_scope(p,s,offer,s.get('seller_offers') or {})
             if payee!=p['payee']:raise HTTPException(409,'Merchant payee changed')
             opportunity=merchant_service.scoped_opportunity(db,p['merchant_id'],offer['opportunity_id'])
             if opportunity.get('demand_key')!=(s.get('seller_offers') or {}).get('demand_key'):
                 raise HTTPException(409,'Buyer policy changed')
+            seller=merchant_service.merchant(db,p['merchant_id'])
+            if not seller.get('active') or not seller.get('opt_in'):
+                raise HTTPException(409,'Merchant is no longer participating')
+            listings={item['product_id']:item for item in merchant_service.product_rows(db,p['merchant_id']) if item.get('source')=='SHOPSIDE_SANDBOX'}
+            fallback=offer['price_cents']<p['total'] and not partial_capture_enabled(p['merchant_id'])
             for item in p['items']:
+                listing=listings.get(item['product'])
+                if not listing or not listing.get('active') or listing.get('sku')!=item.get('sku',listing.get('sku')) or listing.get('price_cents')!=item['price']:
+                    raise HTTPException(409,'Merchant listing changed')
                 row=db.execute('SELECT stock_quantity,reserved_quantity FROM merchant_inventory WHERE merchant_id=? AND product_id=?',
                     (p['merchant_id'],item['product'])).fetchone()
                 if not row or row[0]<item['quantity'] or row[1]<item['quantity']:
                     raise HTTPException(409,'Merchant inventory changed')
-            p['status']='capture_pending';payment_save(p)
+            if not fallback:
+                p['final_total']=offer['price_cents'];p['quote_id']=offer['id']
         if id in payment_busy:raise HTTPException(409,'Settlement already in progress')
+        if not fallback:p=claim_payment_settlement(p)
         payment_busy.add(id)
-    amount=f"{p['total']//100}.{p['total']%100:02d}"
+    settlement_total=p.get('final_total',p['total'])
+    amount=f"{settlement_total//100}.{settlement_total%100:02d}"
     try:
+        if fallback:
+            await paypal('POST',f"/v2/payments/authorizations/{p['authorization_id']}/void",{},p['authorization_void_id'])
+            authorization=await paypal('GET',f"/v2/payments/authorizations/{p['authorization_id']}")
+            if authorization.get('status')!='VOIDED':raise HTTPException(503,'PayPal void requires reconciliation')
+            with lock:
+                s=load(r);p=payment_load(id,r)
+                db.begin()
+                try:
+                    release_merchant_reservations(p)
+                    p['status']='buyer_approval_required';payment_save(p,commit=False)
+                    s['checkout']=None;s['deal_rescue_notice']='PayPal authorization was voided because a lower capture is unavailable. Review the accepted offer and approve a new checkout.'
+                    s['revision']+=1;save(r,s,commit=False)
+                    db.execute('UPDATE settlement_jobs SET status=? WHERE payment_id=?',('fallback',id))
+                    db.commit();notify(r)
+                except Exception:db.rollback();raise
+            return {'status':'buyer_approval_required','reason':'Lower-amount capture is not enabled; buyer must approve a new checkout.'}
         if not p.get('capture'):
             result=await paypal('POST',f"/v2/payments/authorizations/{p['authorization_id']}/capture",
                 {'amount':{'currency_code':'USD','value':amount},'final_capture':True},p['authorization_capture_id'])
             p['capture']=result['id'];payment_save(p)
         capture=await paypal('GET',f"/v2/payments/captures/{p['capture']}")
-        if capture.get('status')!='COMPLETED' or capture.get('amount')!={'currency_code':'USD','value':amount}:
+        if capture.get('status')!='COMPLETED' or not same_amount(capture.get('amount'),settlement_total):
             raise HTTPException(409,'PayPal capture not completed or amount mismatched')
         order=await paypal('GET',f"/v2/checkout/orders/{p['provider_id']}")
         if order['purchase_units'][0].get('payee',{}).get('merchant_id')!=p['payee']:
@@ -998,17 +1127,71 @@ async def settle_authorized_payment(id:str,request:Request):
             db.begin()
             try:
                 release_merchant_reservations(p,paid=True)
-                p['status']='paid';p['paid_at']=datetime.now(timezone.utc).isoformat();p['verification']='paypal_capture_readback'
+                p['status']='paid';p['total']=settlement_total;p['paid_at']=datetime.now(timezone.utc).isoformat();p['verification']='paypal_capture_readback'
                 payment_save(p,commit=False)
                 s['checkout']={**s['checkout'],'status':'paid','paypal_order_id':p['provider_id'],'paypal_capture_id':p['capture']}
                 offer=next((o for o in s.get('flash_offers',[]) if o.get('id')==p.get('quote_id')),None)
                 if offer:offer.update(status='ORDER_COMPLETED',order_id=id,paypal_capture_id=p['capture'])
+                if offer:
+                    opportunity=merchant_service.scoped_opportunity(db,p['merchant_id'],offer['opportunity_id'])
+                    opportunity['status']='ORDER_COMPLETED';merchant_service.audit(opportunity,'payment_captured','paypal',order_id=id)
+                    db.execute('UPDATE merchant_opportunities SET state=? WHERE id=? AND merchant_id=?',
+                        (json.dumps(opportunity),opportunity['id'],p['merchant_id']))
+                db.execute('UPDATE settlement_jobs SET status=? WHERE payment_id=?',('done',id))
                 s['revision']+=1;save(r,s,commit=False);db.commit();notify(r)
             except Exception:db.rollback();raise
         return {'status':'paid','capture_id':p['capture']}
     except (httpx.HTTPError,KeyError,IndexError,TypeError,ValueError) as exc:
         raise HTTPException(502,'PayPal settlement uncertain; reconcile before retrying') from exc
     finally:payment_busy.discard(id)
+
+@app.post('/api/internal/paypal-settlements/recover')
+def recover_settlement_jobs(request:Request):
+    if not merchant_tasks.verify(request):raise HTTPException(403,'Cloud Tasks identity required')
+    if not merchant_tasks.configured():raise HTTPException(503,'Cloud Tasks configuration required')
+    rows=db.execute('SELECT id,payment_id FROM settlement_jobs WHERE status=? LIMIT 20',('pending',)).fetchall()
+    for job_id,payment_id in rows:
+        merchant_tasks.enqueue(job_id+'-retry-'+secrets.token_hex(4),path=f'/api/internal/paypal-settlements/{payment_id}/process')
+    return {'queued':len(rows)}
+
+@app.post('/api/internal/paypal-authorizations/expire')
+async def expire_authorizations(request:Request):
+    if not merchant_tasks.verify(request):raise HTTPException(403,'Cloud Tasks identity required')
+    expired=[]
+    with lock:
+        rows=db.execute('SELECT state FROM payments').fetchall()
+        for row in rows:
+            payment=json.loads(row[0])
+            if payment.get('authorization_mode')!='PREAUTHORIZED' or payment.get('status')!='authorized':continue
+            room=load(payment['room']);consent=room.get('seller_offers') or {}
+            opportunity_closed=False
+            if payment.get('opportunity_id'):
+                op_row=db.execute('SELECT state FROM merchant_opportunities WHERE id=? AND merchant_id=?',(payment['opportunity_id'],payment['merchant_id'])).fetchone()
+                opportunity=merchant_service.read(op_row)
+                opportunity_closed=not opportunity or opportunity.get('status') in ('DECLINED','EXPIRED','CANCELLED')
+            if payment.get('authorization_expires',0)<=time.time() or not consent.get('enabled') or consent.get('expires_at',0)<=time.time() or opportunity_closed:
+                if payment['id'] not in payment_busy:
+                    payment_busy.add(payment['id']);expired.append(payment)
+    results=[]
+    for payment in expired[:20]:
+        try:
+            await paypal('POST',f"/v2/payments/authorizations/{payment['authorization_id']}/void",{},payment['authorization_void_id'])
+            authorization=await paypal('GET',f"/v2/payments/authorizations/{payment['authorization_id']}")
+            if authorization.get('status')!='VOIDED':raise HTTPException(503,'PayPal void requires reconciliation')
+            with lock:
+                current=payment_load(payment['id'],payment['room'])
+                if current['status']!='authorized':continue
+                room=load(payment['room']);db.begin()
+                try:
+                    release_merchant_reservations(current)
+                    current['status']='voided';payment_save(current,commit=False)
+                    if room.get('checkout',{}).get('id')==current['id']:room['checkout']=None
+                    room['revision']+=1;save(payment['room'],room,commit=False);db.commit();notify(payment['room'])
+                except Exception:db.rollback();raise
+            results.append(payment['id'])
+        finally:
+            with lock:payment_busy.discard(payment['id'])
+    return {'voided':results}
 def release_merchant_reservations(p,paid=False):
     if not p.get('merchant_id') or p.get('inventory_finalized'):return
     for item in p['items']:
@@ -1030,13 +1213,16 @@ def merchant_order_receipt(r:str,order_id:str,request:Request):
         auth(r,request);room_state=load(r)
         p=payment_load(order_id,r)
         if not p.get('merchant_id') or p['status']!='paid':raise HTTPException(404,'Completed merchant order not found')
-        trail=[]
+        trail=[];rescue=None
         labels={'offer_published':'Merchant offer published','accepted':'Buyer accepted the offer',
                 'auto_accepted_within_buyer_limit':'Offer accepted within buyer limit',
+                'buyer_agent_countered':'Buyer agent countered within approved limit',
+                'human_approved':'Merchant approved the proposal',
                 'payment_captured':'PayPal Sandbox payment verified'}
         for row in db.execute('SELECT state FROM merchant_opportunities WHERE room_id=?',(r,)).fetchall():
             opportunity=merchant_service.read(row)
             if (opportunity.get('offer') or {}).get('id')!=p.get('quote_id'):continue
+            rescue=opportunity
             trail=[{'event':entry['event'],'label':labels[entry['event']],'actor':entry.get('actor'),
                     'at':entry.get('at')} for entry in opportunity.get('activity',[])
                    if entry.get('event') in labels and isinstance(entry.get('at'),(int,float))]
@@ -1048,6 +1234,11 @@ def merchant_order_receipt(r:str,order_id:str,request:Request):
             'savings_cents':p['reference_total']-p['total'],'currency':p['currency'],
             'paypal_sandbox_order_id':p['provider_id'],'paypal_sandbox_authorization_id':p.get('authorization_id'),
             'paypal_sandbox_capture_id':p['capture'],'paid_at':p['paid_at'],
+            'deal_rescue_id':rescue.get('id') if rescue else p.get('opportunity_id'),
+            'buyer_maximum_cents':p.get('authorized_amount_cents',p['total']),
+            'authorized_at':p.get('authorized_at'),'buyer_policy_version':p.get('policy_version'),
+            'merchant_explanation':(rescue.get('offer') or {}).get('explanation') if rescue else None,
+            'seller_approved_at':next((entry['at'] for entry in reversed((rescue or {}).get('activity',[])) if entry.get('event')=='human_approved'),None),
             'room_members':room_state['people'],'payer':p['payer'],'decision_trail':trail,
             'disclosure':'Fictional ShopSide sandbox products; no goods shipped and no real money charged.'}
 @app.get('/api/paypal/config')
@@ -1106,13 +1297,23 @@ def process_channel3_event(event_id:str,request:Request):
         if not row:raise HTTPException(404,'Event not found')
         event=json.loads(row[0])
         if event.get('status')=='processed':return {'status':'processed'}
+        if event.get('type') not in ('offer.price.changed','offer.availability.changed','offer.created','offer.deleted'):
+            event['status']='ignored'
+            db.execute('UPDATE channel3_webhook_events SET state=? WHERE id=?',(json.dumps(event),event_id));db.commit()
+            return {'status':'ignored'}
         data=event.get('data') or {}
         if not isinstance(data,dict):data={}
-        subscription_id=data.get('subscription_id')
-        # An unknown provider payload is retained for reconciliation instead of guessing a product.
-        if not isinstance(subscription_id,str):
-            return {'status':'pending','reason':'Channel3 subscription ID missing from event'}
-        watches=db.execute('SELECT state FROM channel3_watches WHERE subscription_id=? AND status=?',(subscription_id,'active')).fetchall()
+        subscription=data.get('subscription') if isinstance(data.get('subscription'),dict) else {}
+        product_ref=data.get('product') if isinstance(data.get('product'),dict) else {}
+        subscription_id=data.get('subscription_id') or subscription.get('id')
+        product_id=data.get('product_id') or product_ref.get('id')
+        if isinstance(subscription_id,str):
+            watches=db.execute('SELECT state FROM channel3_watches WHERE subscription_id=? AND status=?',(subscription_id,'active')).fetchall()
+        elif isinstance(product_id,str):
+            watches=db.execute('SELECT state FROM channel3_watches WHERE product_id=? AND status=?',('channel3:'+product_id.removeprefix('channel3:'),'active')).fetchall()
+        else:
+            # Unknown provider payloads remain available for reconciliation.
+            return {'status':'pending','reason':'Channel3 event does not identify a watched subscription or product'}
     from .discovery import product_details
     offers_by_scope={}
     for row in watches:
@@ -1206,6 +1407,7 @@ def merchant_offer_checkout(r:str,offer_id:str,request:Request):
         return p
 @app.post('/api/rooms/{r}/payments/{id}/{action}')
 async def payment(r:str,id:str,action:str,request:Request,background_tasks:BackgroundTasks):
+    from .payment_authorization import same_amount
     with lock:
         s=payer(r,request); p=payment_load(id,r)
         if p.get('authorization_mode')=='PREAUTHORIZED':raise HTTPException(409,'Use the authorization checkout controls for this order')
@@ -1252,7 +1454,7 @@ async def payment(r:str,id:str,action:str,request:Request,background_tasks:Backg
             captures=unit.get('payments',{}).get('captures',[])
             if result['status']=='COMPLETED' and captures:
                 capture=captures[0]
-                if capture['status']!='COMPLETED' or capture['amount']!={'currency_code':'USD','value':amount} or unit.get('payee',{}).get('merchant_id')!=os.environ['PAYPAL_MERCHANT_ID']: raise HTTPException(409,'Provider verification mismatch')
+                if capture['status']!='COMPLETED' or not same_amount(capture.get('amount'),p['total']) or unit.get('payee',{}).get('merchant_id')!=os.environ['PAYPAL_MERCHANT_ID']: raise HTTPException(409,'Provider verification mismatch')
                 p['status']='paid'; p['capture']=capture['id']; p['verified_at']=datetime.now(timezone.utc).isoformat(); p['verification']='paypal_order_readback'
                 if not p.get('merchant_id'):payment_save(p)
         with lock:
@@ -1494,7 +1696,7 @@ def refined_search(r:str,body:AdvancedSearch,request:Request):
         if state['revision']!=body.revision: raise HTTPException(409,'Room changed; refresh and retry')
         if body.page_token:
             filters=state.get('search_filters') or {}
-            if body.page_token!=state.get('search_page_token') or body.query!=state.get('search_query') or any(filters.get(key)!=value for key,value in {'min_price':body.min_price,'max_price':body.max_price,'availability':body.availability,'mode':body.mode,'brand':body.brand,'retailer_domain':body.retailer_domain,'country':body.country,'currency':body.currency,'language':body.language}.items()):
+            if body.page_token!=state.get('search_page_token') or body.query!=state.get('search_query') or any(filters.get(key)!=value for key,value in {'min_price':body.min_price,'max_price':body.max_price,'availability':body.availability,'mode':body.mode,'brand':body.brand,'retailer_domain':body.retailer_domain,'category':body.category,'condition':body.condition,'color_hex':body.color_hex,'country':body.country,'currency':body.currency,'language':body.language}.items()):
                 raise HTTPException(409,'Search filters changed. Run a new search before loading the next page.')
     result=advanced_search(body)
     with lock:
@@ -1503,9 +1705,46 @@ def refined_search(r:str,body:AdvancedSearch,request:Request):
         state['discovery']=result['products']
         state['search_query']=body.query
         state['search_page_token']=result['next_page_token']
-        state['search_filters']={'min_price':body.min_price,'max_price':body.max_price,'availability':body.availability,'mode':body.mode,'brand':body.brand,'retailer_domain':body.retailer_domain,'country':body.country,'currency':body.currency,'language':body.language}
+        state['search_filters']={'min_price':body.min_price,'max_price':body.max_price,'availability':body.availability,'mode':body.mode,'brand':body.brand,'retailer_domain':body.retailer_domain,'category':body.category,'condition':body.condition,'color_hex':body.color_hex,'country':body.country,'currency':body.currency,'language':body.language}
         state['commands'].append(body.command_id);state['revision']+=1;save(r,state)
     return result
+
+class VisualDiscovery(BaseModel):
+    url:str=Field(min_length=12,max_length=2000)
+    kind:str=Field(pattern='^(image|product)$')
+    revision:int
+    command_id:str=Field(min_length=1,max_length=100)
+
+@app.post('/api/rooms/{r}/discovery/visual')
+def visual_discovery(r:str,body:VisualDiscovery,request:Request):
+    from urllib.parse import urlparse
+    import ipaddress
+    from .discovery import request as channel3_request, normalize
+    parsed=urlparse(body.url)
+    if parsed.scheme!='https' or not parsed.hostname or parsed.username or parsed.password or '.' not in parsed.hostname:
+        raise HTTPException(422,'Enter a public HTTPS image or product URL')
+    try:ipaddress.ip_address(parsed.hostname)
+    except ValueError:pass
+    else:raise HTTPException(422,'Use a public domain, not an IP address')
+    with lock:
+        auth(r,request);state=load(r)
+        if body.command_id in state['commands']:return {'ok':True}
+        if state['revision']!=body.revision:raise HTTPException(409,'Room changed; refresh and retry')
+    if body.kind=='image':
+        result=channel3_request('/v1/search',{'image_url':body.url,'limit':12})
+        raw=result.get('products') if isinstance(result,dict) else None
+    else:
+        result=channel3_request('/v1/lookup',{'url':body.url})
+        raw=[result.get('product')] if isinstance(result,dict) else None
+    if not isinstance(raw,list) or any(not isinstance(p,dict) for p in raw):
+        raise HTTPException(502,'Channel3 visual discovery returned an invalid response')
+    products=[normalize(p) for p in raw]
+    with lock:
+        state=load(r)
+        if state['revision']!=body.revision:raise HTTPException(409,'Room changed while searching; retry')
+        state['discovery']=products;state['search_query']='Image search' if body.kind=='image' else 'Product URL lookup'
+        state['search_page_token']=None;state['commands'].append(body.command_id);state['revision']+=1;save(r,state)
+    return {'products':products,'source':'Channel3','retrieved_at':time.time()}
 
 @app.get('/api/rooms/{r}/discovery/{product_id}')
 def detail(r:str,product_id:str,request:Request):
@@ -1535,13 +1774,29 @@ def seller_lens(r:str,product_id:str,request:Request):
 @app.get('/api/rooms/{r}/products/{product_id}/retailer-link')
 def retailer_link(r:str,product_id:str,retailer:str,request:Request):
     room_channel3_product(r,product_id,request)
-    product=product_details(product_id)
+    actor=auth(r,request)
+    attribution_id=hashlib.sha256((r+'\0'+actor).encode()).hexdigest()[:40]
+    product=product_details(product_id,user_id=attribution_id)
     require_checkout_mode(product.get('source',''),CheckoutMode.EXTERNAL_RETAILER)
     offer=next((o for o in product['offers'] if o['retailer'].casefold()==retailer.casefold() and o.get('url')),
                None)
     if not offer:raise HTTPException(404,'Current retailer offer unavailable')
     return {'checkout_mode':CheckoutMode.EXTERNAL_RETAILER,'url':offer['url'],'price_cents':offer['price_cents'],'currency':offer['currency'],
             'availability':offer['availability'],'observed_at':product['retrieved_at']}
+
+@app.get('/api/rooms/{r}/channel3/affiliate-activity')
+def affiliate_activity(r:str,request:Request):
+    from urllib.parse import urlencode
+    from .discovery import request as channel3_request
+    actor=auth(r,request)
+    attribution_id=hashlib.sha256((r+'\0'+actor).encode()).hexdigest()[:40]
+    query=urlencode({'user_id':attribution_id,'limit':20})
+    clicks=channel3_request('/v1/reporting/clicks?'+query)
+    transactions=channel3_request('/v1/reporting/transactions?'+query)
+    if not isinstance(clicks,dict) or not isinstance(transactions,dict):
+        raise HTTPException(502,'Channel3 affiliate reporting is unavailable')
+    return {'attribution_id':attribution_id,'clicks':clicks.get('items',[]),'transactions':transactions.get('items',[]),
+            'window':'Channel3 reporting, last 30 days; availability depends on partner access and attribution.'}
 
 @app.get('/api/rooms/{r}/products/{product_id}/price-intelligence')
 def product_price_intelligence(r:str,product_id:str,request:Request):
@@ -1556,7 +1811,8 @@ def current_checkout(r:str,request:Request):
         if not s.get('checkout'): return None
         p=payment_load(s['checkout']['id'],r)
         return {k:p.get(k) for k in ['id','revision','items','total','fees','currency','expires','status','capture',
-                                      'merchant_id','merchant_name','quote_id','reference_total','provider_id','paid_at']}
+                                      'merchant_id','merchant_name','quote_id','reference_total','provider_id','paid_at',
+                                      'authorization_mode','authorization_id','opportunity_id','provisional','preauthorization_available']}
 
 @app.get('/api/rooms/{r}/me')
 def whoami(r:str,request:Request):
@@ -1810,10 +2066,15 @@ def deal_rescue_progress(r:str,request:Request):
             if op.get('demand',{}).get('expires_at',0)<=merchant_service.now() and status not in merchant_service.TERMINAL:status='EXPIRED'
             if status=='ACCEPTED' and (op.get('offer') or {}).get('expires_at',0)<=merchant_service.now():status='EXPIRED'
             seller=merchant_service.merchant(db,op['merchant_id'])
-            opportunities.append({'id':op['id'],'merchant_name':seller['name'],'status':status,
+            try: authorized_payees=json.loads(os.getenv('PAYPAL_MERCHANT_IDS_JSON','{}'))
+            except ValueError:authorized_payees={}
+            opportunities.append({'id':op['id'],'merchant_id':op['merchant_id'],'merchant_name':seller['name'],'status':status,
+                'preauthorization_available':bool(authorized_payees.get(op['merchant_id'])) if isinstance(authorized_payees,dict) else False,
                 'label':labels.get(status,'Negotiating'),'created_at':op.get('created_at'),
                 'expires_at':op.get('demand',{}).get('expires_at')})
-        return {'enabled':True,'payment_mode':'NEGOTIATE_FIRST','expires_at':consent.get('expires_at'),
+        payments=[json.loads(row[0]) for row in db.execute('SELECT state FROM payments WHERE room=?',(r,)).fetchall()]
+        preauthorized=any(p.get('status') in ('approval','authorizing','authorized','capture_pending') and p.get('authorization_mode')=='PREAUTHORIZED' and p.get('demand_key',demand_key)==demand_key for p in payments)
+        return {'enabled':True,'payment_mode':'PREAUTHORIZED' if preauthorized else 'NEGOTIATE_FIRST','expires_at':consent.get('expires_at'),
                 'opportunities':sorted(opportunities,key=lambda op:(op['created_at'] or 0,op['id']))}
 
 @app.post('/api/rooms/{r}/seller-offers/consent')
@@ -1855,6 +2116,8 @@ def seller_consent(r:str,body:SellerConsent,request:Request):
                 if op['status'] not in merchant_service.TERMINAL:
                     op['status']='CANCELLED';merchant_service.audit(op,'buyer_consent_revoked',actor);merchant_service.save_op(db,op)
         s.setdefault('commands',[]).append(body.command_id);s['revision']+=1;save(r,s)
+        if not body.enabled and merchant_tasks.configured():
+            merchant_tasks.enqueue('paypal-consent-revoked-'+r+'-'+body.command_id,path='/api/internal/paypal-authorizations/expire')
         return public_room_state(s)
 
 def dispatch_merchant_jobs(ids,background_tasks):
@@ -1885,12 +2148,16 @@ async def merchant_opportunity_action(op_id:str,body:merchant_service.DealReques
         if body.action in ('decline','close','reject'):
             op['status']='DECLINED' if body.action!='reject' else 'OFFER_PROPOSED';op.pop('pending',None)
             merchant_service.audit(op,body.action,actor);op.setdefault('commands',[]).append(body.command_id);merchant_service.save_op(db,op)
+            if op['status']=='DECLINED' and merchant_tasks.configured():
+                merchant_tasks.enqueue('paypal-merchant-declined-'+op_id+'-'+body.command_id,path='/api/internal/paypal-authorizations/expire')
             return {'opportunity':op}
         if body.action=='approve':
             if op['status']!='HUMAN_REVIEW' or not op.get('pending'):raise HTTPException(409,'No proposal requires review')
             pending=op['pending'];proposal=OfferProposal(product_id=pending['product_id'],price_cents=pending['price_cents'],explanation=pending['explanation'])
             s=load(op['room_id']);result=merchant_service.publish(db,s,op,m,proposal,actor,notify,human=True)
             merchant_service.audit(op,'human_approved',actor);merchant_service.save_op(db,op);s['revision']+=1;save(op['room_id'],s)
+            if result.get('quote'):schedule_authorized_settlements(op['room_id'],result['quote'])
+            if result.get('quote',{}).get('counter_job_id') and merchant_tasks.configured():merchant_tasks.enqueue(result['quote']['counter_job_id'])
             return result
         if body.action!='generate':raise HTTPException(422,'Unknown action')
         if not m['opt_in'] or not m['active']:raise HTTPException(409,'Merchant agent is paused or opted out')
@@ -1909,6 +2176,8 @@ async def merchant_opportunity_action(op_id:str,body:merchant_service.DealReques
         s=load(op['room_id']);result=merchant_service.publish(db,s,op,m,proposal,actor,notify)
         op['agent_trace']=trace;op.setdefault('agent_traces',[]).append({'at':merchant_service.now(),'actor':actor,**trace});op.setdefault('commands',[]).append(body.command_id);merchant_service.save_op(db,op)
         if result.get('quote'):s['revision']+=1;save(op['room_id'],s)
+        if result.get('quote'):schedule_authorized_settlements(op['room_id'],result['quote'])
+        if result.get('quote',{}).get('counter_job_id') and merchant_tasks.configured():merchant_tasks.enqueue(result['quote']['counter_job_id'])
         return result
 
 @app.post('/api/rooms/{r}/seller-offers/action')
@@ -1936,6 +2205,8 @@ def buyer_deal_action(r:str,body:merchant_service.BuyerDealAction,request:Reques
             quote['status']='ACCEPTED';op['status']='ACCEPTED';merchant_service.audit(op,'accepted',actor)
         elif body.action=='dismiss':
             quote['status']='DECLINED';op['status']='DECLINED';merchant_service.audit(op,'dismissed',actor)
+            if merchant_tasks.configured():
+                merchant_tasks.enqueue('paypal-buyer-dismissed-'+op['id']+'-'+body.command_id,path='/api/internal/paypal-authorizations/expire')
         elif body.action=='counter':
             m=merchant_service.merchant(db,quote['merchant_id'])
             if op['counter_count']>=m['policy']['max_counteroffers']:raise HTTPException(409,'Counteroffer limit reached')
@@ -1949,6 +2220,7 @@ def buyer_deal_action(r:str,body:merchant_service.BuyerDealAction,request:Reques
         if op.get('offer',{}).get('id')==quote['id']:op['offer']=quote
         op.setdefault('commands',[]).append(body.command_id);merchant_service.save_op(db,op)
         s.setdefault('commands',[]).append(body.command_id);s['revision']+=1;save(r,s)
+        if body.action=='accept':schedule_authorized_settlements(r,quote)
         result=public_room_state(s)
     if body.action=='counter':dispatch_merchant_jobs([job_id],background_tasks)
     return result
@@ -2019,6 +2291,8 @@ async def run_merchant_jobs(job_id=None):
                 outcome=merchant_service.publish(db,room,fresh,merchant_service.merchant(db,m['id']),proposal,'merchant_ai',notify)
                 fresh['agent_trace']=trace;fresh.setdefault('agent_traces',[]).append({'at':merchant_service.now(),'actor':'merchant_ai',**trace});merchant_service.save_op(db,fresh)
                 if outcome.get('quote'):room['revision']+=1;save(fresh['room_id'],room)
+                if outcome.get('quote'):schedule_authorized_settlements(fresh['room_id'],outcome['quote'])
+                if outcome.get('quote',{}).get('counter_job_id') and merchant_tasks.configured():merchant_tasks.enqueue(outcome['quote']['counter_job_id'])
                 job['status']='done';merchant_service.put(db,'merchant_jobs',job['id'],job)
                 results.append({'id':op['id'],'status':'published' if outcome.get('quote') else 'human_review'})
         except Exception:

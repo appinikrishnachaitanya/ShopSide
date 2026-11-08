@@ -32,3 +32,23 @@ def test_watch_requires_verified_variant(monkeypatch):
     response=client.post(f'/api/rooms/{room}/price-watches',json={
         'product_id':'channel3:item-123','threshold_cents':10000,'selected_options':{'Size':'9'}})
     assert response.status_code==409
+
+
+def test_cancelled_channel3_subscription_can_be_recreated(monkeypatch):
+    from app import discovery
+    monkeypatch.setenv('CHANNEL3_API_KEY','test-key')
+    calls=[]
+    class Response:
+        status_code=200
+        def raise_for_status(self):pass
+        def json(self):return {'subscription_id':'sub-'+str(len(calls))}
+    class Client:
+        def __init__(self,**kwargs):pass
+        def __enter__(self):return self
+        def __exit__(self,*args):pass
+        def request(self,*args,**kwargs):calls.append((args,kwargs));return Response()
+    monkeypatch.setattr(discovery.httpx,'Client',Client)
+    first=discovery.request('/v1/product-subscriptions',{'product_id':'one','events':['offer.price.changed']})
+    second=discovery.request('/v1/product-subscriptions',{'product_id':'one','events':['offer.price.changed']})
+    assert first['subscription_id']!=second['subscription_id']
+    assert len(calls)==2

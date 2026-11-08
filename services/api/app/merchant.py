@@ -228,11 +228,19 @@ def publish(db,room,op,merchant,proposal,actor,notify,human=False):
         'agent_name':merchant['agent_name'],'product_id':op['product_id'],'product_name':' + '.join(p['title'] for p in products),
         'items':[{'product_id':p['product_id'],'sku':p['sku'],'name':p['title'],'quantity':1,'price_cents':p['price_cents']} for p in products],
         'reference_price_cents':policy.list_price_cents,'price_cents':total,'currency':policy.currency,
-        'limitations':'Fictional ShopSide sandbox products. No goods shipped. Payment requires separate PayPal Sandbox approval.',
+        'limitations':'Fictional ShopSide sandbox products. No goods shipped. Payment requires a buyer-approved PayPal Sandbox checkout or a verified authorization for this exact merchant and scope.',
         'explanation':proposal.explanation[:300],'created_at':created,'expires_at':expires,'status':'OFFER_PUBLISHED'}
     limit=consent.get('auto_accept_limit_cents')
     if isinstance(limit,int) and limit>0 and total<=limit:
         quote['status']='ACCEPTED';quote['auto_accepted']=True
+    elif isinstance(limit,int) and limit>0 and total>limit and op.get('counter_count',0)<merchant['policy']['max_counteroffers']:
+        quote['status']='COUNTERED';quote['buyer_agent_countered']=True
+        op['counter_count']=op.get('counter_count',0)+1
+        op['counter_price_cents']=limit
+        audit(op,'buyer_agent_countered','buyer_agent',price_cents=limit,quote_id=quote['id'])
+        job_id=op['id']+'-buyer-agent-'+str(op['counter_count'])
+        put(db,'merchant_jobs',job_id,{'id':job_id,'opportunity_id':op['id'],'status':'pending','attempts':0,'next_at':now()})
+        quote['counter_job_id']=job_id
     op['offer']=quote;op['status']=quote['status'];op.pop('pending',None);audit(op,'offer_published',actor,quote_id=quote['id'])
     if quote.get('auto_accepted'):audit(op,'auto_accepted_within_buyer_limit','buyer',limit_cents=limit)
     save_op(db,op)

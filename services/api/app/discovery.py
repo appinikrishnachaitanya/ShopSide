@@ -23,6 +23,9 @@ class AdvancedSearch(Search):
     language:str|None=Field(default=None,pattern='^[a-z]{2}$')
     brand:str|None=Field(default=None,min_length=1,max_length=100)
     retailer_domain:str|None=Field(default=None,min_length=3,max_length=253,pattern=r'^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$')
+    category:str|None=Field(default=None,min_length=2,max_length=100)
+    condition:str|None=Field(default=None,pattern='^(new|used)$')
+    color_hex:str|None=Field(default=None,pattern=r'^#[0-9a-fA-F]{6}$')
 class Price(BaseModel):
     price:Decimal=Field(ge=0)
     currency:str=Field(min_length=3,max_length=3)
@@ -79,9 +82,11 @@ def request(path,payload=None):
     key=os.getenv('CHANNEL3_API_KEY')
     if not key: raise HTTPException(503,'Live discovery unavailable — configure Channel3')
     identity=(path,str(payload))
-    with guard:
-        cached=cache.get(identity)
-        if cached and time.monotonic()-cached[0]<30:return cached[1]
+    cacheable=path!='/v1/product-subscriptions'
+    if cacheable:
+        with guard:
+            cached=cache.get(identity)
+            if cached and time.monotonic()-cached[0]<30:return cached[1]
     try:
         budget=channel3_budget.get()
         with httpx.Client(timeout=10 if budget else 15) as client:
@@ -91,7 +96,8 @@ def request(path,payload=None):
                 if response.status_code not in [429,502,503,504] or attempt:break
                 time.sleep(.25)
             response.raise_for_status(); data=response.json()
-            with guard:cache[identity]=(time.monotonic(),data)
+            if cacheable:
+                with guard:cache[identity]=(time.monotonic(),data)
             return data
     except (httpx.HTTPError,ValueError) as exc: raise HTTPException(502,'Channel3 request failed; retry later') from exc
 
@@ -108,12 +114,12 @@ def search_products(query,max_price=None):
     if max_price is not None:body['filters']={'price':{'max_price':max_price}}
     try:return relevant_results(query,[normalize(p) for p in request('/v1/search',body)['products']])
     except (ValueError,KeyError) as exc:raise HTTPException(502,'Channel3 response did not match its documented schema') from exc
-def product_details(id,selected_options=None):
+def product_details(id,selected_options=None,user_id=None):
     from channel3_sdk import Channel3
     key=os.getenv('CHANNEL3_API_KEY')
     if not key:raise HTTPException(503,'Live discovery unavailable — configure Channel3')
     try:
-        client=Channel3(api_key=key,timeout=15,max_retries=0)
+        client=Channel3(api_key=key,timeout=15,max_retries=0,headers={'x-user-id':user_id} if user_id else None)
         raw=client.products.retrieve(id,selected_options=selected_options or None).model_dump(mode='json')
         result=normalize(raw)
     except HTTPException:raise
@@ -182,6 +188,15 @@ def advanced_search(body:AdvancedSearch):
         if len(matches)!=1:raise HTTPException(422,'Brand not found uniquely on Channel3. Check its exact name or search without a brand filter.')
         filters['brand_ids']=[matches[0]['id']]
     if body.retailer_domain:filters['website_ids']=[body.retailer_domain.lower()]
+    if body.category:
+        response=request('/v1/categories/search?'+urlencode({'query':body.category.strip(),'limit':20}))
+        categories=response.get('categories') if isinstance(response,dict) else None
+        if not isinstance(categories,list):raise HTTPException(502,'Channel3 category lookup returned an invalid response')
+        matches=[category for category in categories if isinstance(category,dict) and str(category.get('title','')).casefold()==body.category.strip().casefold() and isinstance(category.get('slug'),str)]
+        if len(matches)!=1:raise HTTPException(422,'Category not found uniquely on Channel3. Check its exact name or search without a category filter.')
+        filters['category_ids']=[matches[0]['slug']]
+    if body.condition:filters['conditions']=[body.condition]
+    if body.color_hex:filters['colors']={'palette':[{'hex':body.color_hex.lower()}]}
     if filters:payload['filters']=filters
     try:
         result=request('/v1/search',payload)

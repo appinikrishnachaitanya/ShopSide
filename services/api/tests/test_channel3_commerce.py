@@ -83,3 +83,17 @@ def test_unknown_brand_does_not_silently_broaden_search(monkeypatch):
     with pytest.raises(HTTPException) as error:
         discovery.advanced_search(discovery.AdvancedSearch(query='shoes',revision=0,command_id='test',brand='Unknown'))
     assert error.value.status_code==422
+def test_category_condition_and_color_use_verified_channel3_filters(monkeypatch):
+    from app import discovery
+    calls=[]
+    def provider(path,payload=None):
+        calls.append((path,payload))
+        if path.startswith('/v1/categories/search'):
+            return {'categories':[{'title':'Running Shoes','slug':'running-shoes'}]}
+        return {'products':[],'next_page_token':None}
+    monkeypatch.setattr(discovery,'request',provider)
+    body=discovery.AdvancedSearch(query='running shoes',revision=0,command_id='filters',
+        category='Running Shoes',condition='used',color_hex='#000000')
+    discovery.advanced_search(body)
+    assert calls[-1][1]['filters']=={'category_ids':['running-shoes'],'conditions':['used'],
+        'colors':{'palette':[{'hex':'#000000'}]}}
