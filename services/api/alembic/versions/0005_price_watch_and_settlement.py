@@ -8,6 +8,7 @@ depends_on=None
 
 
 def upgrade():
+    op.execute('CREATE TABLE IF NOT EXISTS paypal_webhook_payloads(id TEXT PRIMARY KEY, state TEXT NOT NULL)')
     op.execute('CREATE TABLE IF NOT EXISTS channel3_webhook_events(id TEXT PRIMARY KEY, event_type TEXT NOT NULL, received_at TEXT NOT NULL, state TEXT NOT NULL)')
     op.execute('CREATE TABLE IF NOT EXISTS channel3_watches(id TEXT PRIMARY KEY, room TEXT NOT NULL, participant TEXT NOT NULL, product_id TEXT NOT NULL, subscription_id TEXT NOT NULL, scope TEXT NOT NULL, threshold_cents INTEGER NOT NULL, status TEXT NOT NULL, state TEXT NOT NULL)')
     op.execute('CREATE INDEX IF NOT EXISTS channel3_watches_subscription_idx ON channel3_watches(subscription_id,status)')

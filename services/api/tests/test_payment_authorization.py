@@ -85,7 +85,7 @@ def test_buyer_authorizes_before_merchant_offer_and_settles_lower_amount(monkeyp
         (identity(token),seller['id'],'Operator'));main.db.commit()
     room=main.load(room_id)
     room['budget']=30000;room['shopping_intent']={'product_requirements':['compact desk','ergonomic chair']}
-    room['seller_offers']={'enabled':True,'merchant_id':seller['id'],'auto_accept_limit_cents':28000,
+    room['seller_offers']={'enabled':True,'merchant_id':seller['id'],'payment_mode':'PREAUTHORIZED','auto_accept_limit_cents':28000,
         'policy_version':1,'demand_key':uuid.uuid4().hex,'expires_at':main.time.time()+3600}
     main.save(room_id,room)
     opportunity_id=match(main.db,room_id,room,main.notify)[0]
@@ -97,6 +97,7 @@ def test_buyer_authorizes_before_merchant_offer_and_settles_lower_amount(monkeyp
     payment_response=client.post(f'/api/rooms/{room_id}/deal-rescue/{opportunity_id}/provisional-authorization',json={'maximum_cents':28000})
     assert payment_response.status_code==200,payment_response.text
     payment=payment_response.json();assert payment['quote_id'] is None and payment['total']==28000
+    assert client.post(f'/api/rooms/{room_id}/payments/{payment["id"]}/create').status_code==409
     calls=[]
     async def provider(method,path,payload=None,operation=None):
         calls.append((method,path,payload))

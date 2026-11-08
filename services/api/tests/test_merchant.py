@@ -110,6 +110,25 @@ def test_buyer_agent_counters_only_within_recorded_limit(monkeypatch):
     assert updated['counter_price_cents']==13000 and updated['counter_count']==1
     assert main.merchant_service.read(main.db.execute('SELECT state FROM merchant_jobs WHERE id=?',(quote['counter_job_id'],)).fetchone())['status']=='pending'
 
+
+def test_quantity_and_required_human_review_are_enforced(monkeypatch):
+    ids=setup(monkeypatch);buyer,_,rid=room();base='/api/rooms/'+rid
+    state=main.load(rid);state['budget']=50000;main.save(rid,state)
+    enabled=buyer.post(base+'/seller-offers/consent',json={'enabled':True,'quantity':2,
+        'require_human_approval':True,'command_id':'quantity-human-consent'})
+    assert enabled.status_code==200,enabled.text
+    assert buyer.post(base+'/seller-offers/request').json()['opportunity_count']==3
+    seller=TestClient(main.app);headers={'Authorization':'Bearer '+ids[0][1]}
+    op=seller.get('/api/merchant/me',headers=headers).json()['opportunities'][0]
+    assert op['quantity']==2 and op['reference_total_cents']==30020
+    endpoint=f"/api/merchant/opportunities/{op['id']}/action"
+    proposed=seller.post(endpoint,headers=headers,json={'action':'generate','price_cents':28000,'command_id':'quantity-proposal'})
+    assert proposed.status_code==200 and proposed.json()['review_required']
+    approved=seller.post(endpoint,headers=headers,json={'action':'approve','command_id':'quantity-approval'})
+    assert approved.status_code==200,approved.text
+    quote=approved.json()['quote']
+    assert quote['items'][0]['quantity']==2 and quote['reference_price_cents']==30020
+
 def test_seller_negotiation_window_is_bounded_and_not_payment_approval():
     buyer,_,rid=room();base='/api/rooms/'+rid
     assert buyer.post(base+'/seller-offers/consent',json={'enabled':True,'duration_seconds':172801,'command_id':'window-invalid'}).status_code==422
@@ -138,6 +157,16 @@ def test_buyer_can_scope_negotiation_to_one_participating_merchant(monkeypatch):
     assert len(opportunities)==1 and opportunities[0]['merchant_name']=='Sandbox 1'
     changed=buyer.post(base+'/seller-offers/consent',json={'enabled':True,'merchant_id':ids[1][0],'command_id':'scope-change'})
     assert changed.status_code==409
+
+
+def test_preauthorized_mode_requires_selected_merchant(monkeypatch):
+    ids=setup(monkeypatch);buyer,_,rid=room();base='/api/rooms/'+rid
+    missing=buyer.post(base+'/seller-offers/consent',json={'enabled':True,'payment_mode':'PREAUTHORIZED','command_id':'preauth-no-merchant'})
+    assert missing.status_code==422
+    selected=buyer.post(base+'/seller-offers/consent',json={'enabled':True,'payment_mode':'PREAUTHORIZED',
+        'merchant_id':ids[0][0],'command_id':'preauth-selected'})
+    assert selected.status_code==200,selected.text
+    assert selected.json()['seller_offers']['payment_mode']=='PREAUTHORIZED'
 
 def test_deal_rescue_progress_is_room_scoped_and_hides_merchant_policy(monkeypatch):
     setup(monkeypatch)

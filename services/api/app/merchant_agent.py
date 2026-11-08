@@ -49,7 +49,7 @@ async def propose(merchant, opportunity, products, market):
             instruction=('You represent exactly one opted-in sandbox merchant. Call the four read-only tools before proposing. '
             'Use only eligible product IDs and observed prices. Market prices are not merchant costs. '
             'For a multi-product request, price_cents is the combined total for every required product_id, and product_id is the first requested ID. '
-            'Propose one fair offer in integer cents, considering a buyer counteroffer if present. Write the buyer-facing explanation using currency amounts such as $270.00, never raw cents or internal pricing units. Do not invent stock, authority or discounts. '
+            'Propose one fair combined offer in integer cents for the requested quantity, considering a buyer counteroffer and negotiation preference if present. A fast_reply preference favors a timely valid offer; best_price favors the strongest price within approved policy. Shipping and tax are zero for these fictional sandbox items; never invent delivery terms. Write the buyer-facing explanation using currency amounts such as $270.00, never raw cents or internal pricing units. Do not invent stock, authority or discounts. '
             'Flag any price outside approved automated limits for human review. Do not message buyers or take payments.'),
             tools=[get_merchant_policy,get_eligible_products,get_market_price_context,get_buyer_opportunity],
             output_schema=OfferProposal,before_model_callback=before_model,

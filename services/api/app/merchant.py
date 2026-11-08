@@ -133,6 +133,9 @@ def demand_from_room(room):
     currencies=[bundle.get('currency'),intent.get('currency'),(room.get('move_in') or {}).get('mission',{}).get('currency')]
     if any(currency and currency!='USD' for currency in currencies):return None
     categories=[str(x)[:80] for x in (intent.get('product_requirements') or [])[:4]]
+    draft=room.get('deal_rescue_draft') or {}
+    if draft.get('source')=='CHANNEL3_PRICE_WATCH' and draft.get('owned_alternative_category'):
+        categories=[str(draft['owned_alternative_category'])[:80]]
     if not categories:
         categories=[str(s.get('requirement',''))[:80] for s in bundle.get('slots',[]) if isinstance(s,dict)][:4]
     categories=[c for c in categories if c.strip()]
@@ -147,13 +150,15 @@ def match(db,room_id,room,notify):
     demand=demand_from_room(room)
     if not demand:return []
     key=consent['demand_key']; expires=consent['expires_at']
+    quantity=int(consent.get('quantity',1))
+    if quantity<1 or quantity>10:return []
     if expires<=now():return []
     eligible=[]
     for row in db.execute('SELECT state FROM merchants').fetchall():
         m=read(row)
         if not m['opt_in'] or not m['active'] or not m.get('sandbox'):continue
         if consent.get('merchant_id') and consent['merchant_id']!=m['id']:continue
-        available=[p for p in product_rows(db,m['id']) if p.get('source')=='SHOPSIDE_SANDBOX' and p.get('active') and p.get('stock_quantity',0)>0 and p.get('currency')==demand['currency']]
+        available=[p for p in product_rows(db,m['id']) if p.get('source')=='SHOPSIDE_SANDBOX' and p.get('active') and p.get('stock_quantity',0)>=quantity and p.get('currency')==demand['currency']]
         chosen=[]
         for requirement in demand['categories']:
             words={word for word in requirement.lower().split() if word not in ('a','an','the','and','with')}
@@ -161,7 +166,7 @@ def match(db,room_id,room,notify):
             if not candidates:break
             chosen.append(min(candidates,key=lambda p:(p['price_cents'],p['product_id'])))
         if len(chosen)!=len(demand['categories']):continue
-        total=sum(p['price_cents'] for p in chosen)
+        total=sum(p['price_cents']*quantity for p in chosen)
         if total>demand['budget_cents']:continue
         eligible.append((total,m['id'],chosen))
     result=[]
@@ -170,8 +175,11 @@ def match(db,room_id,room,notify):
         if existing:result.append(existing[0]);continue
         op_id=secrets.token_urlsafe(15)
         op={'id':op_id,'merchant_id':merchant_id,'room_id':room_id,'demand_key':key,'status':'MERCHANT_NOTIFIED',
-            'demand':{**demand,'expires_at':expires},'product_id':products[0]['product_id'],
+            'demand':{**demand,'expires_at':expires,'quantity':quantity,'shipping_max_cents':0,'tax_max_cents':0,
+                'negotiation_preference':consent.get('negotiation_preference','best_price'),
+                'require_human_approval':consent.get('require_human_approval',False)},'product_id':products[0]['product_id'],
             'product_ids':[p['product_id'] for p in products],'reference_total_cents':total,
+            'quantity':quantity,'shipping_max_cents':0,'tax_max_cents':0,'linked_watch_id':consent.get('linked_watch_id'),
             'offer':None,'counter_count':0,'created_at':now(),'activity':[]}
         audit(op,'created','system');audit(op,'matching','system');audit(op,'merchant_notified','system')
         db.execute('INSERT INTO merchant_opportunities VALUES(?,?,?,?,?)',(op_id,merchant_id,room_id,key,json.dumps(op)))
@@ -192,9 +200,10 @@ def publish(db,room,op,merchant,proposal,actor,notify,human=False):
     rows={p['product_id']:p for p in product_rows(db,merchant['id']) if p.get('source')=='SHOPSIDE_SANDBOX'}
     if any(product_id not in rows for product_id in product_ids):raise HTTPException(422,'Product not owned for this opportunity')
     products=[current_product(rows[product_id]) for product_id in product_ids]
-    if any(p['status']!='current' or p.get('stock_quantity',0)<1 for p in products):raise HTTPException(409,'Merchant listing unavailable')
+    quantity=int(op.get('quantity',1))
+    if any(p['status']!='current' or p.get('stock_quantity',0)<quantity for p in products):raise HTTPException(409,'Merchant listing unavailable')
     if len({p['currency'] for p in products})!=1:raise HTTPException(422,'Mixed currencies are not supported')
-    reference_total=sum(p['price_cents'] for p in products)
+    reference_total=sum(p['price_cents']*quantity for p in products)
     floor=merchant['policy'].get('minimum_price_cents')
     if not isinstance(floor,int) or floor<=0 or floor>reference_total:raise HTTPException(409,'Merchant minimum price must be approved first')
     policy=ListingPolicy(merchant['id'],op['product_id'],products[0]['currency'],reference_total,floor,
@@ -206,7 +215,7 @@ def publish(db,room,op,merchant,proposal,actor,notify,human=False):
             'reason':'Agent requested human approval','explanation':proposal.explanation[:300]}
         audit(op,'human_review_required',actor,reason='Agent requested human approval');save_op(db,op)
         return {'review_required':True,'reason':'Agent requested human approval'}
-    elif merchant['policy'].get('review_policy')=='all':
+    elif merchant['policy'].get('review_policy')=='all' or consent.get('require_human_approval'):
         op['status']='HUMAN_REVIEW';op['pending']={'product_id':proposal.product_id,'price_cents':proposal.price_cents,'reason':'Merchant policy requires human review','explanation':proposal.explanation[:300]}
         audit(op,'human_review_required',actor,reason='Merchant policy requires human review');save_op(db,op)
         return {'review_required':True,'reason':'Merchant policy requires human review'}
@@ -226,7 +235,7 @@ def publish(db,room,op,merchant,proposal,actor,notify,human=False):
     if total>op['demand']['budget_cents']:raise HTTPException(422,'Offer exceeds buyer budget')
     quote={'id':secrets.token_urlsafe(16),'opportunity_id':op['id'],'merchant_id':merchant['id'],'merchant_name':merchant['name'],
         'agent_name':merchant['agent_name'],'product_id':op['product_id'],'product_name':' + '.join(p['title'] for p in products),
-        'items':[{'product_id':p['product_id'],'sku':p['sku'],'name':p['title'],'quantity':1,'price_cents':p['price_cents']} for p in products],
+        'items':[{'product_id':p['product_id'],'sku':p['sku'],'name':p['title'],'quantity':quantity,'price_cents':p['price_cents']} for p in products],
         'reference_price_cents':policy.list_price_cents,'price_cents':total,'currency':policy.currency,
         'limitations':'Fictional ShopSide sandbox products. No goods shipped. Payment requires a buyer-approved PayPal Sandbox checkout or a verified authorization for this exact merchant and scope.',
         'explanation':proposal.explanation[:300],'created_at':created,'expires_at':expires,'status':'OFFER_PUBLISHED'}
