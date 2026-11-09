@@ -32,7 +32,18 @@ select {
 }
 button {
   cursor: pointer;
+  /* Prevent native grey controls when a new panel has no button overrides. */
+  min-height: 44px;
+  padding: 10px 14px;
+  border: 1px solid var(--action-border, #65577a);
+  border-radius: 10px;
+  background: var(--action-surface, #332a42);
+  color: var(--action-text, #f3edf9);
+  font-weight: 650;
+  line-height: 1.25;
+  transition: background-color .15s ease, border-color .15s ease;
 }
+button:hover:not(:disabled) { border-color: #a38ac4; }
 button:disabled {
   cursor: not-allowed;
   opacity: 0.38;
@@ -45,7 +56,6 @@ a:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
-button,
 input,
 select {
   border: 0;
@@ -2132,3 +2142,107 @@ button>svg{flex:none}
 .commerce-tools>label>span>input{flex:1;width:100%}
 .commerce-tools>label>span>select{flex:0 0 82px}
 .provider-details>p>button{min-height:44px;max-width:100%;padding:10px 14px;border:1px solid #65577a;border-radius:10px;background:#332a42;color:#f3edf9;font-size:12px;font-weight:700;white-space:normal;overflow-wrap:anywhere}
+
+/* Consistent actions and bundle geometry across recommendations and saved plans. */
+:root {
+  --action-surface: #332a42;
+  --action-border: #65577a;
+  --action-text: #f3edf9;
+  --action-primary: #bba7ff;
+  --action-primary-text: #201638;
+}
+button.action-primary, .smart-bundle button.action-primary {
+  background: var(--action-primary);
+  border-color: var(--action-primary);
+  color: var(--action-primary-text);
+  font-weight: 750;
+}
+button.action-primary:hover:not(:disabled) { background: #cbbcff; border-color: #cbbcff; }
+.bundle-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  align-items: stretch;
+  gap: 16px;
+  overflow: visible;
+}
+.bundle-card { min-width: 0; width: 100%; padding: 18px; gap: 14px; }
+.bundle-kind { min-height: 36px; line-height: 1.5; overflow-wrap: anywhere; }
+.bundle-thumbnails { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.bundle-thumbnails > div { min-width: 0; }
+.bundle-product-image {
+  display: grid; place-items: center; height: 128px; overflow: hidden;
+  border: 1px solid #ffffff16; border-radius: 12px;
+  background: #f1eef5; color: #5d526d; font-size: 12px;
+}
+.bundle-thumbnails .bundle-product-image img { width: 100%; height: 100%; object-fit: contain; border-radius: 0; }
+.bundle-thumbnails strong {
+  margin-top: 10px; min-height: 3em; line-height: 1.5;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  overflow: hidden; overflow-wrap: anywhere;
+}
+.bundle-thumbnails small { margin-top: 5px; line-height: 1.5; overflow-wrap: anywhere; }
+.bundle-card-summary { display: grid; align-content: start; gap: 7px; }
+.bundle-card-summary > strong { font-size: 22px; letter-spacing: -.03em; }
+.bundle-card-summary > small { color: #c5bbd3; line-height: 1.5; }
+.bundle-card-summary > p { margin: 4px 0 0; color: #c5bbd3; line-height: 1.6; }
+.bundle-card .bundle-choose { width: 100%; margin-top: auto; }
+.bundle-item { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 14px; }
+.bundle-item > div:first-child { min-width: 0; align-items: flex-start; }
+.bundle-item > div:first-child > img { flex: none; object-fit: contain; background: #f1eef5; }
+.bundle-item > div:first-child > span { min-width: 0; overflow-wrap: anywhere; }
+.bundle-item small { margin-top: 5px; color: #c5bbd3; line-height: 1.5; }
+.bundle-item > div:last-child { width: 100%; display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 8px; }
+.bundle-item > div:last-child > button { flex: 1 1 160px; margin: 0; }
+.bundle-item > div:first-child button { margin-top: 10px; }
+.bundle-approval > div:last-of-type { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
+.bundle-approval > div:last-of-type > button { flex: 1 1 180px; margin: 0; }
+.bundle-alternative { align-items: flex-start; flex-wrap: wrap; }
+.bundle-alternative > img { flex: none; }
+.bundle-alternative > span { min-width: 150px; overflow-wrap: anywhere; }
+.bundle-alternative > div { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; }
+.bundle-alternative > div > button { flex: 1 1 140px; }
+.style-lock > div { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-block: 12px; }
+.style-lock label { flex: 1 1 170px; min-width: 0; }
+.style-lock input { width: 100%; margin-top: 6px; }
+.style-lock button { flex: 0 1 auto; }
+.plan-saves > section { min-width: 0; }
+.plan-saves > section > button { width: 100%; margin-top: 10px; text-align: left; justify-content: flex-start; overflow-wrap: anywhere; }
+.plan-shortlist-item { min-width: 0; }
+.plan-shortlist-item > div { min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .bundle-card { padding: 16px; }
+  .bundle-product-image { height: 112px; }
+  .style-lock button { flex: 1 1 100%; }
+}
+@media (prefers-reduced-motion: reduce) { button { transition: none; } }
+/* Keep merchant approvals legible on the mint action surface. */
+.merchant-review button, .merchant-product button { color: #082b2c; }
+.merchant-review button { margin: 6px 8px 0 0; min-height: 44px; padding: 10px 14px; border-radius: 10px; }
+.merchant-review button + button { background: #332a42; color: #f3edf9; border: 1px solid #65577a; }
+.merchant-heading { flex-wrap: wrap; align-items: center; }
+.merchant-card-head { flex-wrap: wrap; }
+
+/* Dark-theme text hierarchy: avoid legacy green/grey captions on purple panels. */
+:root {
+  --bg: #100d1d;
+  --panel: #1c1828;
+  --panel-2: #272134;
+  --border: #4b405c;
+  --text: #f6f2fb;
+  --muted: #b9b0c8;
+  --dim: #a99db8;
+  --accent: #bba7ff;
+}
+.breadcrumb, .heading-side, .section-meta,
+.product-card-info small, .cart-controls-title small, .cart-controls label,
+.conversation-subtitle, .chat-empty p, .conversation-footer, .side-details label {
+  color: #b9b0c8;
+}
+.product-card-info small { font-size: 11px; }
+.conversation-footer { font-size: 10px; }
+.filter-details summary span { color: #b9b0c8; }
+.discovery-search input::placeholder, .catalog-search input::placeholder,
+.message-compose input::placeholder, .search-filters .filter-control input::placeholder {
+  color: #a99db8;
+  opacity: 1;
+}
