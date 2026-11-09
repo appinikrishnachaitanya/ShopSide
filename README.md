@@ -272,3 +272,12 @@ scripts/verify_live_discovery.py  Opt-in live Vertex AI and Channel3 check
 ```
 
 See [LICENSE](LICENSE) for the project license.
+
+### Mobile regression checks
+
+```bash
+cd apps/web
+SHOPSIDE_TEST_URL=http://localhost:3000 npx playwright test --config=playwright.mobile.config.ts --workers=1
+```
+
+The touch-mode Chromium checks cover 320px/390px phones, a 768px tablet and a short 844px landscape viewport, plus merchant and receipt screens. They exercise filter containment, plan editing/closing, cart containment/closing, readable form sizing and horizontal overflow. Browser emulation does not establish physical iOS Safari keyboard, safe-area or PayPal-app handoff behavior; those remain device checks.

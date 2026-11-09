@@ -2246,3 +2246,28 @@ button.action-primary:hover:not(:disabled) { background: #cbbcff; border-color: 
   color: #a99db8;
   opacity: 1;
 }
+
+/* Mobile form focus must not trigger iOS's small-input auto-zoom. */
+@media (max-width: 640px) {
+  :is(.welcome-form,.discovery-search,.catalog-search,.message-compose,.search-filters,.plan-overview,.smart-bundle,.merchant-shell,.cart-details)
+  :is(input:not([type=checkbox]):not([type=radio]),select,textarea) { font-size: 16px; }
+  .merchant-drawer { height: 100dvh; padding: 20px; padding-bottom: max(20px, env(safe-area-inset-bottom)); }
+  .workspace-dialog { overscroll-behavior: contain; }
+  .cart-details[open] > div { overscroll-behavior: contain; padding-bottom: max(30px, env(safe-area-inset-bottom)); }
+}
+@media (max-width: 480px) {
+  .topbar { padding-inline: 12px; gap: 8px; }
+  .topbar .brand { font-size: 18px; gap: 7px; flex: none; }
+  .topbar-right { gap: 8px; min-width: 0; }
+  .topbar-right .people-label { display: none; }
+  .topbar .invite-button { width: 44px; min-width: 44px; height: 44px; padding: 0; }
+  .topbar .connection { font-size: 10px; gap: 5px; }
+  .topbar .avatar { width: 26px; height: 26px; flex: none; }
+  .cart-details[open] { left: 0; right: 0; width: 100%; max-width: 100%; min-width: 0; margin: 0; }
+  .cart-details[open] > summary { gap: 8px; padding-inline: 16px; }
+}
+@media (max-width: 360px) {
+  /* Keep the live-status dot and its accessible text without crowding Invite. */
+  .topbar .connection { font-size: 0; gap: 0; }
+  .topbar .connection-dot { width: 8px; height: 8px; }
+}

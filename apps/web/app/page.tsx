@@ -1259,7 +1259,7 @@ export default function Home() {
                   setCartOpen(e.currentTarget.open);
                 }}
               >
-                <summary>
+                <summary aria-label="Close cart and checkout">
                   <span>
                     <ShoppingBag size={15} /> Cart & checkout
                   </span>
