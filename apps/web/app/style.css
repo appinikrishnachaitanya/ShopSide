@@ -2086,3 +2086,49 @@ button>svg{flex:none}
 .merchant-card-head{align-items:center;gap:12px}.merchant-card-head button{min-height:44px;border-radius:10px;padding:10px 14px}
 @media(max-width:760px){.filter-details .visual-search-filters{grid-template-columns:repeat(2,minmax(0,1fr))}.visual-search-filters .filter-control{grid-column:1/-1}.visual-search-filters>button{width:100%}}
 @media(max-width:480px){.filter-details .visual-search-filters{grid-template-columns:1fr}.visual-search-filters .filter-control{grid-column:auto}.bundle-item>div:last-child{width:100%;justify-content:flex-start}.commerce-tools>label,.commerce-tools>button{flex:1 1 150px}}
+
+/* Match discovery pagination to the primary search action. */
+.discovery-pagination{display:flex;justify-content:flex-end;align-items:center;gap:12px;margin:16px 0 20px}
+.discovery .discovery-next{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:11px 18px;border:1px solid #bba7ff;border-radius:10px;background:#bba7ff;color:#201638;font:inherit;font-size:12px;font-weight:700;line-height:1.25;cursor:pointer;transition:background .15s ease,border-color .15s ease}
+.discovery .discovery-next:hover:not(:disabled){background:#cbbcff;border-color:#cbbcff}
+.discovery .discovery-next:disabled{opacity:.5;cursor:not-allowed}
+.discovery .discovery-next:focus-visible{outline:3px solid #c3f8e2;outline-offset:3px}
+.filter-panel .filter-control{min-width:0}
+.filter-panel .filter-control input:not([type=checkbox]):not([type=color]),.filter-panel .filter-control select{min-height:44px}
+@media(max-width:480px){.discovery-pagination{margin:14px 0 18px}.discovery .discovery-next{width:100%}}
+@media(prefers-reduced-motion:reduce){.discovery .discovery-next{transition:none}}
+
+/* Scoped action defaults for panels that previously inherited native buttons. */
+:is(.commerce-tools,.seller-offers-controls)>button,
+:is(.shared-room-entry,.deal-progress,.plan-more,.plan-deals-highlight)>button,
+.deal-progress li>button{min-height:44px;padding:10px 14px;border:1px solid #65577a;border-radius:10px;background:#332a42;color:#f3edf9;font-size:12px;font-weight:700;line-height:1.25;white-space:normal;text-align:center}
+:is(.commerce-tools,.seller-offers-controls)>button:hover:not(:disabled),
+:is(.shared-room-entry,.deal-progress,.plan-more,.plan-deals-highlight)>button:hover:not(:disabled),
+.deal-progress li>button:hover:not(:disabled){background:#493a5b;border-color:#a38ac4}
+.shared-room-entry>button,.seller-offers-controls>button:first-child,.deal-progress li>button{background:#bba7ff;border-color:#bba7ff;color:#201638}
+.seller-offers-controls{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px;margin-top:14px}
+.seller-offers-controls>label{display:grid;gap:7px;flex:1 1 180px;min-width:0;font-size:12px}
+.seller-offers-controls>small{flex-basis:100%}
+.seller-offers-controls input,.commerce-tools>label>input,.commerce-tools>label>select{width:100%;min-width:0;min-height:44px;padding:10px 12px;border:1px solid #65577a;border-radius:10px;background:#1c1928;color:#f3edf9}
+.flash-offer-actions input{min-height:44px}
+.deal-duration{flex-wrap:wrap}.deal-duration select{max-width:100%;min-width:0;min-height:44px}
+.deal-progress li{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center}
+.deal-progress li>span,.deal-progress li>strong{overflow-wrap:anywhere;min-width:0}
+.deal-progress li>button{grid-column:1/-1;justify-self:start;max-width:100%}
+.commerce-tools>label{flex:1 1 160px}
+.variant-choices button{max-width:100%;white-space:normal;overflow-wrap:anywhere}
+.variant-choices button[aria-pressed=true]{border-color:#bba7ff;box-shadow:0 0 0 1px #bba7ff}
+@media(max-width:640px){.seller-offers-controls>button{flex:1 1 150px}.deal-duration select{width:100%}.deal-progress li{grid-template-columns:minmax(0,1fr)}.deal-progress li strong{text-align:left}.deal-progress li>button{width:100%}}
+.provider-details-heading{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.provider-details-heading>.section-kicker{flex-basis:100%}
+.provider-details-heading>button,.provider-details [role=alert]>button{min-height:44px;padding:10px 14px;border:1px solid #65577a;border-radius:10px;background:#332a42;color:#f3edf9;font-size:12px;font-weight:700}
+@media(max-width:480px){.provider-details-heading>button{flex:1 1 150px}}
+/* Price Watch groups currency and amount inside a nested field row. */
+.provider-details{background:#1b1925;border-color:#494055;color:#f3edf9}
+.provider-details :is(p,small){color:#bdb3c9}
+.provider-details-heading{justify-content:flex-start}
+.commerce-tools>label>span{display:flex;align-items:stretch;gap:8px;min-width:0}
+.commerce-tools>label>span>input,.commerce-tools>label>span>select{min-width:0;min-height:44px;padding:10px 12px;border:1px solid #65577a;border-radius:10px;background:#1c1928;color:#f3edf9}
+.commerce-tools>label>span>input{flex:1;width:100%}
+.commerce-tools>label>span>select{flex:0 0 82px}
+.provider-details>p>button{min-height:44px;max-width:100%;padding:10px 14px;border:1px solid #65577a;border-radius:10px;background:#332a42;color:#f3edf9;font-size:12px;font-weight:700;white-space:normal;overflow-wrap:anywhere}

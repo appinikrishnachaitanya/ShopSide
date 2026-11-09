@@ -2,6 +2,12 @@
 import { sessionFetch } from "./lib/session";
 import { useEffect, useState } from "react";
 
+async function commerceResponse(response: Response, fallback: string) {
+  const value = await response.json().catch(() => null);
+  if (!response.ok || !value) throw new Error(typeof value?.detail === "string" ? value.detail : fallback);
+  return value;
+}
+
 function mergeListingEvidence(selected:any,fresh:any){
   if(!fresh||fresh.id!==selected.id)return selected;
   return {
@@ -36,7 +42,7 @@ export default function ProductDetails({
     let active = true;
     setDetail(null);
     setLens(null);setHistory(null);
-    setError("");setNotice("");setWatchCurrency(product.offers?.[0]?.currency||"USD");
+    setError("");setNotice("");setWatchPrice("");setWatchRetailer("");setWatchCurrency(product.offers?.[0]?.currency||"USD");
     sessionFetch(
       "/api/rooms/" +
         room.id +
@@ -44,8 +50,7 @@ export default function ProductDetails({
         encodeURIComponent(product.provider_id),
     )
       .then(async (r) => {
-        if (!r.ok) throw Error("Product details are unavailable.");
-        return r.json();
+        return commerceResponse(r, "Product details are unavailable.");
       })
       .then((x) => {
         if (active) {
@@ -86,11 +91,7 @@ export default function ProductDetails({
           }),
         },
       );
-      if (!response.ok) {
-        const d = await response.json();
-        throw Error(d.detail || "Please try again");
-      }
-      const result = await response.json();
+      const result = await commerceResponse(response, "Product options are temporarily unavailable. Please try again.");
       if (kind === "cheaper") setNotice(result.count ? `${result.count} lower-priced similar products added below.` : "No lower-priced similar products found with a comparable currency.");
     } catch (e: any) {
       setError(e.message);
@@ -112,7 +113,7 @@ export default function ProductDetails({
       if(action==="create"&&(!Number.isFinite(body.threshold_cents)||body.threshold_cents<=0))throw Error(`Enter a price above 0 ${watchCurrency}.`);
       const path=action==="create"?`/api/rooms/${room.id}/price-watches`:`/api/rooms/${room.id}/price-watches/${id}/${action}`;
       const response=await sessionFetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-      const value=await response.json();if(!response.ok)throw Error(value.detail||"Price Watch could not be updated.");
+      const value=await commerceResponse(response,"Price Watch could not be updated. Please try again.");
       setWatches(current=>action==="create"?[...current,value]:current.map(w=>w.id===id?value:w));
       setNotice(action==="create"?"Price Watch is on. Channel3 will notify ShopSide when it detects an offer change.":`Price Watch ${value.status}.`);
     }catch(e:any){setError(e.message)}finally{setLoading(false)}
@@ -121,9 +122,7 @@ export default function ProductDetails({
     setLoading(true);setError("");
     try{
       const response=await sessionFetch(`/api/rooms/${room.id}/products/${encodeURIComponent(product.provider_id)}/${kind}`);
-      const value=await response.json().catch(()=>null);
-      if(!response.ok)throw Error(value?.detail||"Price or seller data is temporarily unavailable. Please retry.");
-      if(!value)throw Error("Price or seller data is temporarily unavailable. Please retry.");
+      const value=await commerceResponse(response,"Price or seller data is temporarily unavailable. Please retry.");
       if(kind==="seller-lens"){
         if(value.product?.id!==product.id)throw Error("Seller data did not match this selected listing. Its saved offer details remain unchanged.");
         setLens(value);setDetail(mergeListingEvidence(product,value.product));
@@ -134,7 +133,7 @@ export default function ProductDetails({
     const tab=window.open("about:blank","_blank");
     try{
       const response=await sessionFetch(`/api/rooms/${room.id}/products/${encodeURIComponent(product.provider_id)}/retailer-link?retailer=${encodeURIComponent(retailer)}`);
-      const value=await response.json();if(!response.ok)throw Error(value.detail||"Retailer offer is unavailable.");
+      const value=await commerceResponse(response,"Retailer offer is unavailable. Please try again.");
       if(tab){tab.opener=null;tab.location.href=value.url}else window.location.href=value.url;
     }catch(e:any){tab?.close();setError(e.message)}
   }
