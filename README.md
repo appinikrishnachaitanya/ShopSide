@@ -72,6 +72,21 @@ Implementation, application observations and independent provider reconciliation
 
 Payment completion is based on verified provider capture, not merely order creation, buyer quote acceptance or a webhook delivery status. Provider identifiers above are test references, not credentials.
 
+## Submission audit snapshot — 9 November 2026
+
+A fresh deployed audit verified independent Alex/Jamie memberships, two-way chat, shared focus, retailer-cart add/remove synchronization, live Channel3 results, AG Grid comparison, Smart Bundle approvals and merchant negotiation. A new buyer-approved Sandbox purchase produced order `1B869405NR8850812`, capture `2SN30388663720211`, a $250 receipt and $40 savings.
+
+**Open release gates:** rapid consecutive shortlist saves reproduced a stale-revision rejection that dropped one save. A minimal shortlist-only retry is fixed and regression-tested locally; deployment and live retesting are still required. Independent PayPal verification is also incomplete: the audit environment's API client differs from the deployed app client, its order lookup returned 404 and its event query had no matching event. These results do not negate the application receipt, but they do not prove provider/webhook reconciliation. Live capped authorization and offline settlement were not executed in this audit.
+
+Backend tests: **176 passed, 1 skipped** (PostgreSQL-only recovery skipped under SQLite). Frontend build and all **7 targeted browser checks** passed after the fix. Run the targeted browser checks against a local frontend:
+
+```bash
+cd apps/web
+SHOPSIDE_TEST_URL=http://localhost:3000 npx playwright test tests/action-layout.spec.ts tests/merchant-portal.spec.ts tests/order-summary.spec.ts tests/shortlist-conflict.spec.ts --workers=1
+```
+
+These browser tests use controlled API fixtures; live payment approval, provider events and deployed SQL processing require separate evidence. Treat submission readiness as **NO-GO until the deployed shortlist fix and payment evidence gates are closed**, or explicitly limit the presentation to the demonstrated capture journey.
+
 ## Evaluate ShopSide in minutes
 
 ### Fastest path: two real guest identities

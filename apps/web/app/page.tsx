@@ -342,12 +342,16 @@ export default function Home() {
   }
   async function command(kind: string, value: string) {
     try {
-      await api("rooms/" + room.id + "/commands", {
-        kind,
-        value,
-        revision: room.revision,
-        command_id: crypto.randomUUID(),
-      });
+      const payload = {kind, value, revision: room.revision, command_id: crypto.randomUUID()};
+      try {
+        await api("rooms/" + room.id + "/commands", payload);
+      } catch (error: any) {
+        // A rejected shortlist toggle has not been applied. Preserve its command ID
+        // and retry once against fresh state when another click won the revision.
+        if (kind !== "shortlist" || error.status !== 409) throw error;
+        const fresh = await api("rooms/" + room.id);
+        await api("rooms/" + room.id + "/commands", {...payload, revision: fresh.revision});
+      }
       const incoming = await api("rooms/" + room.id);
       S((current: any) =>
         !current || incoming.revision >= current.revision ? incoming : current,
