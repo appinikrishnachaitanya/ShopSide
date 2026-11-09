@@ -1,40 +1,109 @@
-# ShopSide
+# ShopSide AI
 
-**A little closer, even from afar.**
+### A little closer, even from afar.
 
-ShopSide is a collaborative shopping app. People share a room, discover products, compare options, discuss choices, and plan purchases together. Its Deal Rescue workflow connects participating fictional ShopSide merchants to buyer-approved negotiation limits. Real Channel3 listings remain retailer purchases; ShopSide does not claim their inventory or charge them through PayPal.
+**Two people shop together, AI agents help them reach a better decision, and PayPal completes the approved purchase.**
 
-The app supports shared rooms for up to four participants, live chat and decisions, Channel3 product search, Smart Bundle, optional Move-in Studio visualization, Price Watch, a merchant portal, and PayPal Sandbox checkout for ShopSide-owned sample products. The sample merchant catalog is fictional: no goods ship and sandbox payments do not charge real money.
+Shopping with someone far away usually means scattered links, repeated questions, and decisions lost in chat. Sellers see the other side: a ready buyer who leaves because the price does not work.
 
-## Product and payment boundaries
+ShopSide connects those moments. Up to four people discover, compare, discuss and choose in a shared shopping room. When a shopper opts into **Deal Rescue**, a buyer agent checks their limits and a merchant agent works within the seller’s policies. People retain control over seller approval and PayPal payment approval.
 
-| Product source | Discovery and comparison | Purchase path |
+> **Demonstrated Sandbox outcome:** a $290 desk-and-chair basket became a seller-approved $250 offer. The buyer approved payment, ShopSide verified the capture, and the room received an order receipt recording the $40 saving.
+
+This is a working hackathon application, with real Channel3 discovery, Gemini and Google ADK agents, collaborative rooms, and PayPal Sandbox payments. The merchant test catalog is fictional: no real money is charged and no goods ship.
+
+## The experience
+
+| Moment | What ShopSide does |
+| --- | --- |
+| **Describe a goal** | Extracts the shopping request, budget, preferences and constraints through one entry point. Furniture, fashion and electronics share the same workspace. |
+| **Bring your people** | Invite by link, join by name, and share messages, saved products, reactions and decisions across browser sessions. |
+| **Compare the evidence** | Channel3 discovery and the AG Grid Decision Board put observed prices, retailers, available attributes, evidence and participant reactions side by side. Missing specifications remain unknown. |
+| **Build a complete choice** | Smart Bundle gathers candidates with ADK tools and validates categories, currency, prices and budget on the backend. Choose, swap, approve and save a bundle together. |
+| **Understand the options** | Variant Studio, Seller Lens, Swap & Save, Style Lock and Price Intelligence extend the same product journey, using provider data where available. |
+| **Preview a room, optionally** | Eligible furniture can open Move-in Studio on demand. Normal shopping does not require WebGL or load the 3D experience automatically. |
+| **Rescue a stalled deal** | An opted-in merchant receives consented demand. Its agent proposes an offer within configured rules; required seller review happens before publication. |
+| **Approve and pay** | The buyer agent checks offer acceptance rules. The buyer separately approves PayPal payment. Verified capture unlocks the receipt and decision timeline. |
+
+## Deal Rescue: two agents, clear authority
+
+```mermaid
+flowchart LR
+  Buyer[Buyer sets limits and opts in] --> Match[Match participating merchants]
+  Match --> Merchant[Merchant agent proposes an offer]
+  Merchant --> Seller[Seller reviews when required]
+  Seller --> Quote[Offer arrives in the shared room]
+  Quote --> Agent[Buyer agent validates acceptance rules]
+  Agent --> Pay[Buyer approves PayPal payment]
+  Pay --> Verify[Verify provider capture]
+  Verify --> Receipt[Order receipt and decision timeline]
+```
+
+**Buyer agent:** checks the offer against the shopper’s consent, amount limit and applicable policy. Accepting a quote does not grant permission to charge the buyer.
+
+**Merchant agent:** uses consented demand, eligible merchant products and approved pricing policies. It does not represent unaffiliated Channel3 retailers or receive the room’s private chat.
+
+**PayPal:** supplies the payment approval and settlement boundary. Ordinary checkout uses CAPTURE. The implemented bounded AUTHORIZE workflow lets a buyer approve a capped hold for an explicitly mapped merchant before the seller responds. Settlement revalidates merchant, SKU, quantity, stock, buyer policy, currency, amount and expiry. Lower-amount capture remains individually gated; without verified capability, ShopSide voids the hold and requests a fresh buyer-approved checkout.
+
+The illustrated demo demonstrates negotiated **buyer-approved capture**. It should not be described as proof of offline authorization settlement.
+
+## Two catalogs. Two honest checkout paths.
+
+| Source | What is real | Where payment happens |
 | --- | --- | --- |
-| Channel3 live products | Real product records and retailer offers, with observed prices and availability | Open a fresh tracked retailer link and pay the retailer directly |
-| ShopSide sandbox merchants | Fictional ShopSide-owned test catalog with tenant inventory and merchant policies | PayPal Sandbox CAPTURE checkout, or a short AUTHORIZE hold for an explicitly mapped merchant |
+| **CHANNEL3_LIVE** | Provider product records, observed retailer offers and available attributes | At the external retailer, using a refreshed retailer link. ShopSide does not own that inventory or collect its payment. |
+| **SHOPSIDE_SANDBOX** | Working merchant policies, negotiation, inventory checks, orders and Sandbox payment integration; fictional products | PayPal Sandbox through ShopSide, with buyer approval and verified capture. |
 
-An external Channel3 price alert can create a request to find a ShopSide-owned alternative. The alternative may be a different item. The alert never authorizes payment for the external retailer product.
+A Channel3 price alert can prompt a search for a ShopSide-owned alternative. That alternative may be a different product; it never authorizes payment for the external listing.
 
-### Implemented workflows
+## What has actually been demonstrated?
 
-- **Shared shopping:** private room membership, invitations, WebSocket updates, chat, reactions, shortlist, comparison, shared plans, and per-person approvals.
-- **Channel3 discovery:** search, agentic search, structured price, brand, retailer, category, condition and color filters, product detail, variants, similar items, retailer offers, price history, image URL search, product URL lookup, affiliate attribution, and affiliate reporting when the Channel3 account permits it.
-- **Smart Bundle:** ADK tools gather real Channel3 candidates; deterministic backend checks validate products, offers, categories, currency and budget. Bundles are observed-price suggestions, not compatibility guarantees or one-click retailer orders.
-- **Move-in capabilities:** editable move-in mission and optional Three.js room. The 3D room uses markers and illustrative dressing; it does not verify product dimensions or fit. Ordinary shopping and shared rooms do not require WebGL.
-- **Price Watch:** exact product and selected variant, retailer scope, threshold, pause/resume/cancel, shared subscription reuse, and price or availability alerts from signed Channel3 webhooks. Channel3 subscriptions operate in en-US/USD. Alerts may lag retailer changes.
-- **Deal Rescue:** consented merchant matching, quantity, selected merchant, buyer maximum, negotiation preference, seller review requirement, bounded buyer-agent counteroffers, expiry, and revocation. Merchants can require human review.
-- **PayPal Sandbox:** ordinary buyer-approved CAPTURE checkout remains available. For an explicitly mapped ShopSide merchant, the buyer can approve a capped AUTHORIZE hold before the seller responds. Settlement rechecks merchant, SKU, quantity, stock, buyer policy, currency, amount, expiry and PayPal readback. Lower capture is individually gated. Without verified lower-capture capability, ShopSide voids the hold and asks the buyer to approve a new checkout.
-- **Receipts and webhooks:** completed owned-merchant orders have a receipt and decision timeline. PayPal and Channel3 webhooks require signature verification; processing jobs read provider state before changing payment or alert state.
+Implementation, application observations and independent provider reconciliation are different levels of evidence.
 
-## Prepared judge room
+| Capability | Evidence and status |
+| --- | --- |
+| Fresh two-person journey | Recorded independent Alex and Jamie browser contexts, two-way chat, reactions, comparison, Smart Bundle selection and shared approval. |
+| Merchant negotiation | Recorded a fresh merchant opportunity, seller approval, offer arrival and buyer-agent acceptance within the configured limit. |
+| PayPal Sandbox capture | Completed through interactive buyer approval in the recorded application. Receipt reports order `8KU948533N759762K`, capture `4G178691U30729931`, $250 captured and $40 saved. This observation is not an independent PayPal dashboard audit. |
+| Capped AUTHORIZE workflow | Implemented, including strict scope checks and guarded settlement. The latest recorded CAPTURE journey does not establish end-to-end offline settlement. |
+| PayPal webhook delivery | Operator supplied PayPal dashboard events marked Success for an earlier order. Signature verification and reconciliation are implemented. Those events have not been independently correlated here with the deployed SQL event/job records. |
+| Channel3 Price Watch | Signed webhook handling, durable events, subscription preferences and alerts are implemented. Live signed delivery is deployment-specific and is not established by the payment recording. |
+| UI checks | Latest UI change passed six browser checks covering responsive bundles, sampled text/action contrast, merchant navigation/retry and order summary; the frontend production build passed. This is targeted coverage, not a claim that every live provider combination was exercised. |
 
-To create a real shared room with Person A and Person B, two spatially eligible catalog items, marker reactions, and chat, run the one-time seeder from a checkout with the Python API dependencies installed:
+Payment completion is based on verified provider capture, not merely order creation, buyer quote acceptance or a webhook delivery status. Provider identifiers above are test references, not credentials.
+
+## Evaluate ShopSide in minutes
+
+### Fastest path: two real guest identities
+
+1. Open the deployed frontend in two independent browser profiles (or a regular window and a private window). No ShopSide account is required. Use **Alex** in the first and **Jamie** in the second.
+2. Alex enters “A compact desk and ergonomic chair under $500” and creates a room. Copy its invitation into Jamie’s browser; Jamie enters a name and joins. A guest identity belongs to that browser session; sharing the room URL does not make both people the same participant.
+3. Send a message in each direction. Save two Channel3 products, compare them in the Decision Board and add a reaction from each person. Check that the second browser updates without refreshing.
+4. Run Smart Bundle, inspect the total and remaining budget, choose a bundle, approve from both browsers and save it to the shared plan. Retailer listings continue to their own checkout.
+5. For Deal Rescue, use an opted-in **ShopSide Sandbox merchant** with available stock, a configured minimum price and an operator-approved pricing policy. Set a buyer offer limit and require seller review. The authenticated merchant operator reviews the opportunity in `/merchant`, proposes an offer and approves publication.
+6. Watch the offer arrive in the buyer room. Distinguish acceptance of that quote from payment approval. Review the exact Sandbox order, approve in PayPal using an authorized Sandbox buyer account, then return to the captured order and receipt.
+
+Merchant tokens and Sandbox buyer credentials are supplied privately by the operator through secure settings. They are deliberately absent from the repository. Room collaboration can be evaluated without them; merchant operation and interactive payment require that authenticated access. Sandbox outcomes depend on current inventory and policies, so the $250 example is evidence of a completed run, not a promised price for every run.
+
+### Prepared preview room
 
 ```sh
 FRONTEND_URL=https://<frontend-cloud-run-url> .venv/bin/python scripts/seed_showcase_room.py
 ```
 
-The script uses the frontend proxy, so the room is stored in the configured backend database and live room updates use the regular API. It prints an invite link; a judge can open it, enter a name, and join as another participant. Each run creates a new room, so retain and reuse its invite link for the walkthrough.
+The existing seeder creates a persisted room with Person A and Person B, two eligible catalog products, placements, reactions and chat. It prints an invitation for reviewers to join as another guest. Seeded identities are historical participants, not public login accounts or transferable browser sessions. Use the fresh Alex/Jamie path above to reproduce two independent interactive approvals. Each seed run creates a new room; retain its invitation privately and confirm the room is reachable before sharing it with judges.
+
+### Record one uninterrupted payment proof
+
+Keep a supplementary continuous clip of the payment journey, separate from the edited promotional film:
+
+1. Show the accepted merchant quote and exact total.
+2. Open PayPal Sandbox and show buyer approval. Authenticate before recording where possible; never expose passwords or personal account details.
+3. Return to ShopSide and show verified capture, receipt, PayPal order ID and capture ID.
+4. In the authorized PayPal Sandbox dashboard, show the corresponding capture and webhook event. Match the **same** order/capture IDs; older successful events do not prove this purchase’s delivery.
+5. Run the read-only PostgreSQL check in [scripts/db/verify_paypal_receipt.sql](scripts/db/verify_paypal_receipt.sql) with that order ID. Confirm the payment is paid, the matching capture is recorded and the corresponding event processing state is `processed`. A delivered event still marked `pending` is not completed reconciliation.
+
+The latest film contains a fresh successful application capture and receipt, but excludes credential entry and is edited. It is not described as uninterrupted PayPal-dashboard-to-database evidence. The corresponding provider event and deployed SQL reconciliation remain to be correlated by an authorized operator; no dashboard or database access is implied by a public room invitation.
 
 ## Architecture
 
@@ -143,12 +212,12 @@ Use separate Cloud Run services for the frontend and API. Deploy the API first, 
 2. Build and deploy the API from `services/api/Dockerfile` using the `services/` directory as build context. Set `DATABASE_URL`, `WEB_ORIGIN`, `COOKIE_SECURE=true`, provider settings, and the correct region/project variables.
 3. Run `alembic -c /app/alembic.ini upgrade head` once in a Cloud Run Job using the API image, database attachment and runtime identity. Verify the job succeeds before routing traffic.
 4. Create a Cloud Tasks queue and a dedicated task invoker service account. Grant the task account `roles/run.invoker` on the backend. Grant the backend producer identity permission to create tasks and `iam.serviceAccountUser` on the invoker identity. Set all Cloud Tasks variables on the backend.
-5. Register `https://<backend-origin>/api/channel3/webhooks` in Channel3 and store the supplied Svix secret as `CHANNEL3_WEBHOOK_SECRET`. Register `https://<backend-origin>/api/paypal/webhook` in the PayPal Sandbox app and set `PAYPAL_WEBHOOK_ID`.
+5. Register the publicly reachable `/api/channel3/webhooks` endpoint in Channel3 (use the frontend proxy origin when the backend requires IAM) and store the supplied Svix secret as `CHANNEL3_WEBHOOK_SECRET`. Register the publicly reachable `/api/paypal/webhook` endpoint in the PayPal Sandbox app (the frontend proxy can forward to an IAM-protected backend) and set `PAYPAL_WEBHOOK_ID`.
 6. Deploy the frontend from `apps/web/Dockerfile`. Set `BACKEND_URL` at runtime to the backend origin. If the backend requires IAM, set `BACKEND_ID_TOKEN_AUDIENCE` to that service URL and grant the frontend identity `roles/run.invoker`.
 7. Keep the API at one instance for this release. Current locking, room coordination and some job claims are process-local. Cloud SQL persistence does not make multiple API instances safe.
 8. Configure Cloud Scheduler with OIDC to call `POST /api/internal/paypal-settlements/recover` for pending settlement jobs and `POST /api/internal/paypal-authorizations/expire` to void expired or revoked authorizations. The token email must match `CLOUD_TASKS_INVOKER_SERVICE_ACCOUNT`, because the backend verifies that exact identity; grant the Cloud Scheduler service agent permission to mint its OIDC token. Configure an appropriate timeout for WebSockets; browsers reconnect and reload the latest room state after disconnection.
 
-Do not make a private backend public only to admit tasks. Match the task URL and audience to the deployed backend URL, and verify the task invoker identity. Cloud Run and Cloud Tasks IAM, Cloud SQL connectivity, provider webhook delivery, and PayPal buyer approval/capture must be checked in the target GCP project.
+Do not make a private backend public only to admit tasks. Match the task URL and audience to the deployed backend URL, and verify the task invoker identity. Cloud Run and Cloud Tasks IAM, Cloud SQL connectivity, provider webhook delivery, and each newly deployed payment configuration must be checked in the target GCP project. The recorded Sandbox capture above establishes one successful application journey, not every configuration or settlement mode.
 
 ## Verification
 
@@ -163,10 +232,10 @@ Browser tests are in `apps/web/tests` and run with Playwright against a locally 
 
 Automated tests do not prove a deployed Cloud Tasks delivery or interactive PayPal buyer authorization and capture. A PayPal order in `CREATED` status is not a completed payment. ShopSide marks payment complete only after provider readback verifies the capture.
 
-## Current limitations
+## Release scope and operational boundaries
 
 - Channel3 Price Watch subscriptions are limited to en-US/USD. Webhook alerts reflect when Channel3 detects an offer change, not an instant retailer update.
-- PayPal is Sandbox only. The ordinary CAPTURE path and bounded AUTHORIZE workflow are implemented, but interactive buyer approval, capture and target-project webhook delivery still need to be verified in your GCP and PayPal Sandbox setup. Lower-amount capture stays disabled unless explicitly mapped as verified.
+- PayPal is Sandbox only. Interactive buyer-approved CAPTURE was demonstrated in the fresh recorded journey above. The bounded AUTHORIZE workflow is implemented; end-to-end offline settlement and deployed webhook-to-SQL/job reconciliation remain separate verification items. Lower-amount capture stays disabled unless explicitly mapped as verified.
 - No Channel3 programmatic checkout is enabled. External listings are purchased at their retailers, and ShopSide does not collect PayPal funds for them.
 - No PayPal vaulting, long-lived payment mandate, or production off-session charging is implemented.
 - Cloud Run multi-instance room coordination is not ready. Keep one backend instance until room locks, rate limits, payment claims and subscription lifecycle coordination use shared distributed primitives.
